@@ -1,9 +1,9 @@
 # Laboratorio de Software - Práctica Git y GitHub
 
 ## 👤 Integrante / Autor
-- **Nombre:** Juan Villegas
-- **Usuario GitHub:** [`juanv01`](https://github.com/juanv01)
-- **Correo Institucional / Contacto:** `juanesvillegasoso1550@gmail.com`
+- **Nombre:** Juan Esteban Villegas & Juan Camilo Gomez
+- **Usuario GitHub:** [`juanv01`](https://github.com/juanv01) & [`DuJack166`] (https://github.com/DuJack166)
+- **Correo Institucional / Contacto:** `esteban.villegas@utp.edu.co` & `juan.gomez13@utp.edu.co`
 
 ---
 

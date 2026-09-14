@@ -132,6 +132,17 @@ class RAGEngine:
 
         return formatted_results
 
+    def query_similar(
+        self,
+        query: str,
+        category: Optional[str] = None,
+        top_k: int = 4
+    ) -> List[Dict[str, Any]]:
+        """
+        Alias para retrieve_context: consulta de fragmentos por similitud vectorial.
+        """
+        return self.retrieve_context(query=query, category=category, top_k=top_k)
+
     def get_collection_stats(self) -> Dict[str, Any]:
         """Retorna estadísticas de la base de conocimiento vectorial."""
         try:

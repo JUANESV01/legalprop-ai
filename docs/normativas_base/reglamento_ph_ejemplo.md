@@ -7,6 +7,16 @@ Materia: Régimen de Propiedad Horizontal, Convivencia y Copropiedad
 ### Artículo 1. Objeto y Naturaleza.
 La presente ley regula la forma especial de dominio, denominada propiedad horizontal, en la que concurren derechos de propiedad exclusiva sobre bienes privados y derechos de copropiedad sobre el terreno y los demás bienes comunes, con el fin de garantizar la seguridad, la convivencia pacífica y la función social de la propiedad.
 
+### Artículo 19. Alcance y Régimen de los Bienes y Áreas Comunes.
+Los bienes, la infraestructura y las áreas comunes pertenecen en común y proindiviso a los propietarios de bienes privados o unidades independientes.
+1. Bienes y áreas comunes esenciales: Son aquellos indispensables para la existencia, estabilidad, conservación y seguridad del edificio o conjunto, tales como el terreno comunal, las estructuras, fachadas, techos, las redes matrices de servicios públicos domiciliarios, los pasillos, escaleras y ascensores.
+2. Bienes y áreas comunes no esenciales o de recreación: Comprenden áreas como zonas verdes comunales, piscinas, gimnasios, salones comunales, canchas deportivas y zonas de juegos infantiles. Su utilización estará sujeta a los horarios, tarifas de mantenimiento y normativas aprobadas por la asamblea de copropietarios.
+3. Prohibición de apropiación: Ningún propietario o tenedor podrá apropiarse ni realizar cerramientos u ocupación exclusiva de áreas comunes sin autorización unánime de la asamblea y reforma estatutaria registrada.
+
+### Artículo 20. Uso y Disfrute Armónico de Áreas Comunes.
+Todos los copropietarios y residentes tienen derecho al libre uso y goce de las áreas y bienes comunes, siempre y cuando lo hagan según la naturaleza de los mismos y sin perjudicar el legítimo derecho de los demás copropietarios.
+Parágrafo. En ningún caso las sanciones por mora en expensas comunes podrán privar o limitar el acceso a bienes comunes esenciales (ascensores, escaleras principales, vías de evacuación ni acueducto).
+
 ### Artículo 29. De las Expensas Comunes Necesarias.
 Los propietarios de los bienes privados de un edificio o conjunto estarán obligados a contribuir al pago de las expensas causadas por la administración y la prestación de los servicios comunes esenciales para la existencia, seguridad y conservación de los bienes comunes, de acuerdo con el coeficiente de copropiedad respectivo.
 Parágrafo 1. La obligación de contribuir a las expensas comunes sigue siempre al dominio del bien privado, aun respecto de las causadas antes de su adquisición.

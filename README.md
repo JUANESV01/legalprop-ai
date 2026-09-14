@@ -13,7 +13,85 @@
 
 ## 🏗️ 1. Arquitectura del Sistema (Patrón MVC para RAG)
 
-El proyecto sigue el patrón arquitectónico **Modelo-Vista-Controlador (MVC)**, desacoplado en dos capas físicas:
+El proyecto implementa el patrón de arquitectura **Modelo-Vista-Controlador (MVC)**, desacoplado en dos capas físicas (Frontend SPA en React y Backend API REST en FastAPI) e integrado con una base vectorial:
+
+### 🏛️ Mapeo del Patrón MVC (Model-View-Controller)
+
+- **Mapeo del Patrón MVC:** Vista: React, Controlador: FastAPI, Modelo: ChromaDB/PostgreSQL.
+
+| Capa MVC | Tecnología Principal | Responsabilidad en LegalProp AI |
+| :--- | :--- | :--- |
+| **Vista (View)** | **React 18 + Vite + TypeScript + TailwindCSS** | Interfaz interactiva de consulta ciudadana, hilos de conversación (`ChatContainer`), tarjetas de citas normativas verificables (`CitationCard`), subida e indexación de normas (`DocumentUploader`) y feedback en tiempo real. |
+| **Controlador (Controller)** | **FastAPI (Python 3.10+)** | Enrutamiento de endpoints REST (`/api/v1/chat/query`, `/api/v1/documents/ingest`, `/api/v1/health`), validación estricta de esquemas Pydantic v2, orquestación del pipeline RAG y control de sesiones. |
+| **Modelo (Model)** | **ChromaDB / PostgreSQL / SQLite** | Almacén vectorial de embeddings normativos (**ChromaDB**), modelos de dominio de entidades jurídicas (`domain/chat.py`, `domain/document.py`), esquemas de datos (`schemas/`) y persistencia transaccional y relacional de auditoría (**PostgreSQL / SQLite**). |
+
+---
+
+### 🔄 Diagrama de Flujo RAG / Grounding Web (ASCII)
+
+```text
++----------------------------------------------------------------------------------------------------+
+|                         FLUJO RAG + GROUNDING WEB - LEGALPROP AI (ASCII)                           |
++----------------------------------------------------------------------------------------------------+
+
+     [ Usuario / Asesor Inmobiliario ]
+                 |
+                 | (1) Pregunta Jurídica (ej. "¿Causales de restitución de inmueble arrendado?")
+                 v
+  +-------------------------------+
+  |        VISTA (React SPA)      |
+  |  - ChatContainer / Input      |
+  |  - Validación de interfaz     |
+  +---------------+---------------+
+                  |
+                  | (2) HTTP POST /api/v1/chat/query
+                  v
+  +--------------------------------------------------------------------------------------------------+
+  |                               CONTROLADOR (FastAPI APIRouter)                                    |
+  |  - Validación de Payload con Pydantic Schemas (ChatQueryRequest)                                 |
+  |  - Detección / Clasificación de Categoría Jurídica ("arriendo" | "propiedad_horizontal")         |
+  +-------------------------------+------------------------------------------------------------------+
+                                  |
+                                  | (3) Orquestación RAG y Búsqueda Semántica
+                                  v
+  +--------------------------------------------------------------------------------------------------+
+  |                                     CAPA DE SERVICIOS                                            |
+  |                                                                                                  |
+  |   [ Paso A: Búsqueda Vectorial ]                  [ Paso B: Grounding Web / Fallback ]           |
+  |   RAGEngine (Embeddings Semánticos)               WebSearchService (Jurisprudencia en Vivo)      |
+  |               |                                                   |                              |
+  |               v                                                   v                              |
+  |   +-----------------------+                       +-------------------------------+              |
+  |   |   MODELO: ChromaDB    |                       |  Corte Constitucional / CSJ   |              |
+  |   |   (Vector Store)      |                       |  (Sentencias y Decretos Web)  |              |
+  |   +-----------+-----------+                       +---------------+---------------+              |
+  |               |                                                   |                              |
+  |               +-------------------------+-------------------------+                              |
+  |                                         |                                                        |
+  |                                         v                                                        |
+  |                          Contexto Normativo Ensamblado                                           |
+  |                     (Artículos de Ley 820 / Ley 675 + Citas)                                     |
+  |                                         |                                                        |
+  |                                         v                                                        |
+  |   [ Paso C: Síntesis e Inferencia Rigurosa ]                                                     |
+  |   GeminiService (Google GenAI SDK - Gemini 3.7 Flash)                                            |
+  |   - System Instruction: Asesor Jurídico Experto (Prohibición estricta de alucinación)            |
+  |   - Temperature: 0.2 (Rigor formal)                                                              |
+  +-----------------------------------------+--------------------------------------------------------+
+                                            |
+                                            | (4) ChatQueryResponse (Texto fundamentado + Citas exactas)
+                                            v
+  +--------------------------------------------------------------------------------------------------+
+  |                                     RETORNO A LA VISTA                                           |
+  |  - Renderizado de respuesta con Markdown y análisis jurídico                                     |
+  |  - Despliegue de CitationCards interactivas con artículo y fragmento original                    |
+  |  - Disclaimer legal deontológico en pantalla                                                     |
+  +--------------------------------------------------------------------------------------------------+
+```
+
+---
+
+### 📂 Estructura del Repositorio
 
 ```text
 legalprop-ai/
@@ -23,47 +101,47 @@ legalprop-ai/
 │   ├── DDA_LegalProp_AI.md            # Documento de Diseño de Arquitectura detallado
 │   └── normativas_base/               # Corpus normativo inicial para el RAG
 │       ├── README.md
-│       ├── ley_arriendos_ejemplo.md   # Ley 820 de 2003 (Arriendos)
-│       └── reglamento_ph_ejemplo.md   # Ley 675 de 2001 (Propiedad Horizontal)
+│       ├── ley_arriendos_ejemplo.md   # Ley 820 de 2003 (Arriendos e Incremento IPC / Restitución)
+│       └── reglamento_ph_ejemplo.md   # Ley 675 de 2001 (Propiedad Horizontal, Mascotas y Áreas Comunes)
 ├── frontend/                          # [VISTA] SPA en React + Vite + TypeScript + Tailwind
 │   ├── package.json
 │   ├── vite.config.ts
 │   ├── tsconfig.json
 │   ├── tailwind.config.js
 │   ├── src/
-│   │   ├── components/                # Componentes comunes (Header, Sidebar, Badges)
+│   │   ├── components/                # Header, Sidebar, Badge
 │   │   ├── features/
-│   │   │   ├── chat/                  # Contenedor, mensajes, citas, input
-│   │   │   └── documents/             # Uploader e indexador de normativas
-│   │   ├── services/                  # Cliente HTTP Axios/Fetch a FastAPI
-│   │   ├── types/                     # Interfaces TypeScript tipadas
+│   │   │   ├── chat/                  # ChatContainer, ChatMessage, CitationCard, ChatInput
+│   │   │   └── documents/             # DocumentUploader, DocumentList
+│   │   ├── services/                  # api.ts (Cliente HTTP a FastAPI)
+│   │   ├── types/                     # Tipos TypeScript compartidos
 │   │   ├── App.tsx
 │   │   └── main.tsx
 │   └── public/
 └── backend/                           # [CONTROLADOR + MODELO] FastAPI + ChromaDB + Gemini
     ├── requirements.txt
     ├── .env.example
-    ├── main.py                        # Punto de entrada de la aplicación FastAPI
+    ├── main.py                        # Entrypoint FastAPI
     └── app/
         ├── api/v1/
         │   ├── endpoints/
-        │   │   ├── chat.py            # Orquestación de consulta RAG + inferencia LLM
-        │   │   ├── documents.py       # Ingesta y gestión de documentos
-        │   │   └── health.py          # Chequeo de salud y estado vectorial
+        │   │   ├── chat.py            # Endpoint /api/v1/chat/query
+        │   │   ├── documents.py       # Endpoint /api/v1/documents
+        │   │   └── health.py          # Endpoint /api/v1/health
         │   └── router.py              # Agrupador de rutas API v1
         ├── core/
-        │   ├── config.py              # Configuración y settings vía Pydantic
-        │   └── security.py            # Validaciones de seguridad y cabeceras
+        │   ├── config.py              # Pydantic Settings
+        │   └── security.py            # Middleware de seguridad
         ├── models/
-        │   ├── domain/                # Entidades de dominio (Chat, Document, Chunk)
-        │   └── schemas/               # Esquemas de validación Pydantic Request/Response
+        │   ├── domain/                # Entidades de dominio (Chat, Document)
+        │   └── schemas/               # Esquemas Pydantic Request/Response
         ├── services/
-        │   ├── gemini_service.py      # Integración con Google GenAI SDK (Gemini 3.7 Flash)
-        │   ├── rag_engine.py          # Motor de búsqueda vectorial con ChromaDB
-        │   ├── web_search.py          # Fallback de jurisprudencia externa en tiempo real
-        │   └── text_splitter.py       # Segmentador de textos jurídicos por artículos
+        │   ├── gemini_service.py      # Google GenAI SDK (Gemini 3.7 Flash)
+        │   ├── rag_engine.py          # Motor de búsqueda vectorial ChromaDB
+        │   ├── web_search.py          # Fallback Web / Grounding
+        │   └── text_splitter.py       # Segmentador de artículos legales
         └── storage/
-            └── vector_store/          # Almacén persistente local de ChromaDB
+            └── vector_store/          # Directorio persistente de ChromaDB
 ```
 
 ---

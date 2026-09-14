@@ -27,13 +27,18 @@ En los contratos de arrendamiento para vivienda urbana no se podrán exigir dep�
 ### Artículo 20. Fijación del Canon de Arrendamiento e Incremento Anual.
 Cada doce (12) meses de ejecución del contrato bajo un mismo precio, el arrendador podrá incrementar el canon hasta en una proporción que no sea superior al ciento por ciento (100%) del incremento que haya tenido el índice de precios al consumidor (IPC) en el año calendario inmediatamente anterior a aquel en que se deba efectuar el reajuste del canon, siempre y cuando el nuevo canon no exceda el uno por ciento (1%) del valor comercial del inmueble o de la parte de él que se dé en arriendo.
 
-### Artículo 22. Terminación por Parte del Arrendador.
-Son causales para que el arrendador pueda pedir unilateralmente la terminación del contrato, las siguientes:
-1. La no cancelación por parte del arrendatario de las rentas y reajustes dentro del término estipulado.
-2. La no cancelación de los servicios públicos, que cause la desconexión o pérdida del servicio.
+### Artículo 22. Terminación por Parte del Arrendador y Causales de Restitución.
+Son causales para que el arrendador pueda pedir unilateralmente la terminación del contrato y la restitución del inmueble, las siguientes:
+1. La no cancelación por parte del arrendatario de las rentas y reajustes dentro del término estipulado en el contrato.
+2. La no cancelación de los servicios públicos domiciliarios o expensas comunes, que cause la desconexión o pérdida del servicio.
 3. El subarriendo total o parcial del inmueble, la cesión del contrato o del goce del inmueble o el cambio de destinación del mismo por parte del arrendatario, sin expresa autorización del arrendador.
 4. La incursión reiterada del arrendatario en procederes que afecten la tranquilidad ciudadana de los vecinos, o la destinación comprobada del inmueble para actos delictivos.
-5. La realización de mejoras, cambios o ampliaciones del inmueble, sin expresa autorización del arrendador.
+5. La realización de mejoras, cambios o ampliaciones del inmueble, sin expresa autorización del arrendador, o la destrucción total o parcial del inmueble atribuible al arrendatario.
+6. La violación por parte del arrendatario a las normas del respectivo reglamento de propiedad horizontal cuando se trate de viviendas sometidas a dicho régimen.
+7. Causales especiales de restitución a la fecha de vencimiento del término inicial o de sus prórrogas, previo desahucio con no menos de tres (3) meses de anticipación:
+   a) Cuando el propietario o poseedor del inmueble necesitare ocuparlo para su propia habitación, por un término no menor de un (1) año.
+   b) Cuando el inmueble haya de demolerse para efectuar una nueva construcción, o cuando se requiera desocuparlo con el fin de ejecutar obras independientes para su reparación.
+   c) Cuando deba entregarse en cumplimiento de las obligaciones originadas en un contrato de compraventa.
 
 Parágrafo 1. El arrendador podrá dar por terminado el contrato a la fecha de vencimiento del término inicial o de sus prórrogas, previo aviso escrito con una antelación no menor de tres (3) meses y el pago de una indemnización equivalente al precio de tres (3) meses de arrendamiento cuando no medie causal legal de incumplimiento.
 
@@ -44,3 +49,10 @@ Son causales para que el arrendatario pueda pedir unilateralmente la terminació
 3. El desconocimiento por parte del arrendador de derechos reconocidos al arrendatario por la ley o contractualmente.
 
 Parágrafo. El arrendatario podrá dar por terminado unilateralmente el contrato de arrendamiento dentro del término inicial o durante sus prórrogas, previo aviso escrito dirigido al arrendador con una antelación no menor de tres (3) meses y el pago de una indemnización equivalente al precio de tres (3) meses de arrendamiento. Cumplidas estas condiciones el arrendador estará obligado a recibir el inmueble.
+
+### Artículo 384. Proceso y Causales de Restitución Judicial de Inmueble Arrendado (Régimen Procesal CGP).
+Cuando el arrendador demande para que el arrendatario le restituya el inmueble arrendado se aplicarán las siguientes reglas:
+1. Demanda de restitución: Se fundamentará en la causal de terminación legal o contractual invocada (mora en pago de cánones, servicios públicos, o vencimiento del término pactado).
+2. Notificación y contestación: Si la causal invocada fuere la falta de pago de los cánones de arrendamiento o servicios, el demandado no será oído en el proceso hasta tanto demuestre que ha cancelado dichos cánones a órdenes del juzgado.
+3. Medidas cautelares de restitución provisional: El demandante podrá solicitar desde la presentación de la demanda la práctica de inspección judicial y entrega provisional del inmueble si este se encuentra desocupado o abandonado, para evitar su deterioro.
+

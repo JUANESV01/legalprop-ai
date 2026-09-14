@@ -41,7 +41,7 @@ El sistema adopta el clásico y robusto patrón **Modelo-Vista-Controlador (MVC)
 |  - RAGEngine (Recuperación)        | |  - Domain Models (Chat, Doc)     |
 |  - GeminiService (Inferencia LLM)  | |  - Pydantic Schemas (Validación) |
 |  - LegalTextSplitter (Chunking)    | |  - ChromaDB (Vector Store)       |
-|  - WebSearchService (Fallback)     | |  - SQLite (Metadatos & Historial)|
+|  - WebSearchService (Fallback)     | |  - PostgreSQL/SQLite (Auditoría) |
 +------------------------------------+ +----------------------------------+
 ```
 
@@ -49,7 +49,7 @@ El sistema adopta el clásico y robusto patrón **Modelo-Vista-Controlador (MVC)
 - **Modelos de Dominio (`app/models/domain/`):** Representan las entidades del negocio jurídico (Consulta, Mensaje, Documento Normativo, Fragmento de Artículo, Cita Verificada).
 - **Esquemas Pydantic (`app/models/schemas/`):** Contratos de datos tipados para validar entradas y formatear respuestas seguras.
 - **Almacén Vectorial (ChromaDB):** Almacena representaciones densas multidimensionales de cada artículo o cláusula legal junto con metadatos estructurados (`doc_id`, `articulo`, `categoria`, `norma_numero`).
-- **Base Relacional (SQLite / SQLAlchemy):** Persistencia transaccional de sesiones y bitácora de auditoría.
+- **Base Relacional (PostgreSQL / SQLite vía SQLAlchemy):** Persistencia transaccional de sesiones, histórico de consultas y bitácora de auditoría.
 
 ### 2.2. Vista (View)
 - Desarrollada como una Single Page Application (SPA) con **React 18/19**, **TypeScript** y **TailwindCSS**.

@@ -38,3 +38,5 @@ Para ejecutar el script de verificación del entorno:
 ```bash
 python3 app.py
 ```
+
+by rtk

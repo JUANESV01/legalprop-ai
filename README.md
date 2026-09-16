@@ -7,7 +7,7 @@
 
 ---
 
-## 🛠 Descripción del Entorno y Herramientas
+## Descripción del Entorno y Herramientas
 
 Esta práctica corresponde al **Taller Tema 5: Entorno de desarrollo, Git y GitHub**, enfocada en el dominio del flujo de trabajo estándar en desarrollo de software, control de versiones distribuido y trabajo colaborativo mediante ramas para el proyecto **LegalProp AI** en la Universidad Tecnológica de Pereira (UTP).
 
@@ -20,11 +20,11 @@ Esta práctica corresponde al **Taller Tema 5: Entorno de desarrollo, Git y GitH
 
 ---
 
-## ⚖️ Proyecto: LegalProp AI
+## Proyecto: LegalProp AI
 
 **LegalProp AI** es un asistente virtual inteligente concebido como un chatbot normativo para guiar a ciudadanos, inquilinos, propietarios y administradores en temas de arrendamientos y convivencia en copropiedades en Colombia.
 
-### 📌 ¿De qué trata y qué problema resuelve?
+### ¿De qué trata y qué problema resuelve?
 En Colombia, las reglas sobre arriendos y propiedad horizontal (**Ley 675 de 2001** y **Ley 820 de 2003**) son extensas y utilizan un lenguaje técnico complejo que la mayoría de personas no comprende. Esto provoca conflictos frecuentes de convivencia (ruidos, tenencia de mascotas, cuotas de administración o incrementos injustificados de arriendo) y genera respuestas demoradas de 8 a 15 días hábiles por parte de administradores e inmobiliarias.
 
 **LegalProp AI resuelve este problema haciendo lo siguiente:**
@@ -35,7 +35,7 @@ En Colombia, las reglas sobre arriendos y propiedad horizontal (**Ley 675 de 200
 
 ---
 
-## 🛠️ Tecnologías que Utiliza
+## Tecnologías que Utiliza
 
 El proyecto se estructura bajo el patrón de arquitectura **Modelo-Vista-Controlador (MVC)** e integra las siguientes tecnologías:
 
@@ -47,7 +47,7 @@ El proyecto se estructura bajo el patrón de arquitectura **Modelo-Vista-Control
 
 ---
 
-## 📌 Estructura del Repositorio
+## Estructura del Repositorio
 
 ```text
 legalprop-ai/

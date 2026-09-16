@@ -35,7 +35,7 @@ En Colombia, las reglas sobre arriendos y propiedad horizontal (**Ley 675 de 200
 
 ---
 
-## 🛠️ Tecnologías que Utiliza (Stack Tecnológico)
+## 🛠️ Tecnologías que Utiliza
 
 El proyecto se estructura bajo el patrón de arquitectura **Modelo-Vista-Controlador (MVC)** e integra las siguientes tecnologías:
 

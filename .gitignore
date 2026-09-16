@@ -1,5 +1,5 @@
 # ==========================================
-# Laboratorio de Software - .gitignore
+# LegalProp AI - .gitignore
 # ==========================================
 
 # Backups y Archivos Comprimidos
@@ -18,16 +18,35 @@ build/
 dist/
 *.egg-info/
 
-# Entornos Virtuales
+# Entornos Virtuales Python
 .venv/
 env/
 venv/
 ENV/
 
-# Variables de Entorno y Secretos
+# Node.js & Frontend
+node_modules/
+frontend/node_modules/
+.vite/
+frontend/.vite/
+frontend/dist/
+
+# Bases de Datos y Almacén Vectorial (Persistencia local)
+*.sqlite3
+*.db
+storage/vector_store/*
+!storage/vector_store/.gitkeep
+backend/storage/vector_store/*
+!backend/storage/vector_store/.gitkeep
+backend/app/storage/vector_store/*
+!backend/app/storage/vector_store/.gitkeep
+
+# Variables de Entorno y Secretos (Mantener .env.example)
 *.env
 .env
 .env.local
+.env.*.local
+!.env.example
 
 # Sistema Operativo y Editores
 .DS_Store

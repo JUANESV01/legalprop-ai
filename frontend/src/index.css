@@ -4,25 +4,76 @@
 
 @layer base {
   body {
-    @apply bg-slate-950 text-slate-100 selection:bg-blue-600 selection:text-white font-sans;
+    @apply bg-cream-100 text-slate-800 selection:bg-teal-100 selection:text-teal-900 font-sans antialiased;
+    background-color: #F5F1E8;
   }
 }
 
-/* Custom modern scrollbars */
+@layer utilities {
+  .glass-card {
+    background: #FAF8F3;
+    border: 1px solid #E5DDCF;
+    box-shadow: 0 1px 3px rgba(40, 45, 45, 0.04);
+  }
+
+  .glass-card-hover {
+    transition: all 0.2s ease-in-out;
+  }
+  .glass-card-hover:hover {
+    background: #FFFFFF;
+    border-color: #53A6A0;
+    box-shadow: 0 4px 12px rgba(40, 45, 45, 0.06);
+  }
+
+  .glass-cream {
+    background: #EFE9DE;
+    border: 1px solid #DFD6C6;
+  }
+
+  .glass-input {
+    background: #FFFFFF;
+    border: 1.5px solid #D9CFBC;
+    box-shadow: 0 1px 3px rgba(40, 45, 45, 0.03);
+    transition: all 0.18s ease-in-out;
+  }
+  .glass-input:focus-within {
+    border-color: #166E69;
+    box-shadow: 0 0 0 3px rgba(22, 110, 105, 0.12);
+  }
+}
+
+/* Custom elegant scrollbars in warm sand & muted teal */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.6);
+  background: #EFE9DE;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(100, 116, 139, 0.4);
+  background: #C2B49B;
   border-radius: 9999px;
+  border: 2px solid #EFE9DE;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.6);
+  background: #53A6A0;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.25s ease-out forwards;
 }

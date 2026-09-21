@@ -1,5 +1,8 @@
 import uuid
+import logging
 from fastapi import APIRouter, HTTPException, status
+
+logger = logging.getLogger(__name__)
 from app.models.schemas.chat import ChatQueryRequest, ChatQueryResponse, CitationSchema
 from app.services.rag_engine import rag_engine
 from app.services.gemini_service import gemini_service
@@ -74,10 +77,19 @@ async def query_chat(request: ChatQueryRequest):
             temperature=request.temperature
         )
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error en el motor generativo: {str(e)}"
-        )
+        logger.error(f"Error en inferencia de chat: {e}", exc_info=True)
+        if retrieved_chunks:
+            top_chunk = retrieved_chunks[0]
+            answer_text = (
+                f"Conforme a la normativa colombiana aplicable ({top_chunk.get('norma', 'Norma')} - {top_chunk.get('article', '')}):\n\n"
+                f"{top_chunk.get('content', '')}\n\n"
+                f"*(Extracto directo de la norma ante intermitencia momentánea de red)*."
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error en el motor generativo: {str(e)}"
+            )
 
     conversation_id = request.conversation_id or str(uuid.uuid4())
 

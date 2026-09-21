@@ -11,34 +11,39 @@ export const CitationCard: React.FC<CitationCardProps> = ({ citation, index }) =
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900/70 overflow-hidden text-xs transition-all hover:border-slate-700">
+    <div className="rounded-xl border border-cream-200 bg-cream-50 overflow-hidden text-xs transition-all duration-150 hover:border-teal-400 shadow-soft">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full px-3 py-2 text-left flex items-center justify-between hover:bg-slate-800/40 transition-colors"
+        className="w-full px-3 py-2.5 text-left flex items-center justify-between hover:bg-cream-100/60 transition-colors"
       >
-        <div className="flex items-center space-x-2 truncate">
-          <BookMarked className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span className="font-semibold text-slate-200 truncate">
+        <div className="flex items-center space-x-2.5 truncate">
+          <div className="w-5 h-5 rounded-md bg-teal-50 border border-teal-200 flex items-center justify-center shrink-0">
+            <BookMarked className="w-3 h-3 text-teal-700" />
+          </div>
+          <span className="font-semibold text-slate-800 truncate">
             [{index + 1}] {citation.norma} {citation.articulo ? `• ${citation.articulo}` : ''}
           </span>
         </div>
+
         <div className="flex items-center space-x-2 shrink-0 ml-2">
-          {citation.similarity_score && (
-            <span className="text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">
+          {citation.similarity_score !== undefined && (
+            <span className="text-[10px] font-mono text-teal-800 bg-teal-50 px-2 py-0.5 rounded-full border border-teal-200">
               {Math.round(citation.similarity_score * 100)}% relevancia
             </span>
           )}
-          {expanded ? <ChevronUp className="w-3.5 h-3.5 text-slate-400" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-400" />}
+          <span className="text-slate-400 hover:text-slate-600">
+            {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          </span>
         </div>
       </button>
 
       {expanded && (
-        <div className="p-3 pt-1 border-t border-slate-800/80 bg-slate-950/40">
-          <div className="flex items-center space-x-1.5 text-[10px] text-slate-400 mb-1">
-            <FileText className="w-3 h-3" />
-            <span>{citation.source_title}</span>
+        <div className="p-3 pt-2 border-t border-cream-200 bg-white space-y-2 animate-fadeIn">
+          <div className="flex items-center space-x-1.5 text-[11px] text-slate-500 font-medium">
+            <FileText className="w-3.5 h-3.5 text-teal-700" />
+            <span>Fuente: {citation.source_title}</span>
           </div>
-          <p className="text-slate-300 font-mono text-[11px] leading-relaxed whitespace-pre-wrap bg-slate-900/80 p-2.5 rounded border border-slate-800">
+          <p className="text-slate-700 font-sans text-xs leading-relaxed bg-cream-50/80 p-3 rounded-lg border border-cream-200 whitespace-pre-wrap">
             {citation.fragmento}
           </p>
         </div>

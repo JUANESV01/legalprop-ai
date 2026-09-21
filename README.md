@@ -361,4 +361,4 @@ O ejecutando el script bash:
 ## 🔐 9. Seguridad y Descargo de Responsabilidad
 
 > [!WARNING]
-> **AVISO DE RESPONSABILIDAD LEGAL:** LegalProp AI es una herramienta de asistencia y orientación jurídica con fines estrictamente académicos e informativos. Ninguna respuesta emitida por la plataforma constituye concepto vinculante ni sustituye la asesoría personalizada de un abogado profesional u carreras afines..
+> **AVISO DE RESPONSABILIDAD LEGAL:** LegalProp AI es una herramienta de asistencia y orientación jurídica con fines estrictamente académicos e informativos. Ninguna respuesta emitida por la plataforma constituye concepto vinculante ni sustituye la asesoría personalizada de un abogado profesional u carreras afines.

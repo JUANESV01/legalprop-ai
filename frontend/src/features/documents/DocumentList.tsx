@@ -1,5 +1,5 @@
 import React from 'react';
-import { BookOpen, FileText, CheckCircle, Database } from 'lucide-react';
+import { Database, ShieldCheck, BookOpen } from 'lucide-react';
 import { BackendHealthResponse } from '../../types';
 
 interface DocumentListProps {
@@ -10,50 +10,60 @@ export const DocumentList: React.FC<DocumentListProps> = ({ health }) => {
   const baseNormas = [
     {
       title: 'Ley 820 de 2003',
-      sub: 'Régimen de Arrendamiento de Vivienda Urbana',
-      category: 'Arriendo',
-      badgeColor: 'text-amber-300 bg-amber-900/30 border-amber-700/40',
-      articles: 'Art. 1, 8, 9, 16 (Prohibición depósitos), 20 (Incremento IPC), 22, 24 (Causales)',
+      sub: 'Régimen de Arrendamiento de Vivienda Urbana en Colombia',
+      category: 'Arrendamientos',
+      badgeColor: 'text-amber-800 bg-amber-50 border-amber-200',
+      articles: 'Art. 1, 8, 9, 16 (Prohibición de depósitos), 20 (Tope IPC), 22, 24 (Causales y preaviso)',
     },
     {
-      title: 'Ley 675 de 2001 y Reglamento PH',
+      title: 'Ley 675 de 2001 y Reglamentos PH',
       sub: 'Régimen de Propiedad Horizontal y Convivencia',
       category: 'Propiedad Horizontal',
-      badgeColor: 'text-indigo-300 bg-indigo-900/30 border-indigo-700/40',
-      articles: 'Art. 1, 29 (Expensas), 37 (Asambleas), 50 (Administrador), 59 (Sanciones), 74 (Ruido)',
+      badgeColor: 'text-teal-800 bg-teal-50 border-teal-200',
+      articles: 'Art. 1, 29 (Expensas comunes), 37 (Asambleas), 50 (Administrador), 59 (Sanciones), 74 (Convivencia)',
     },
   ];
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+    <div className="bg-cream-50 rounded-2xl p-5 space-y-4 border border-cream-200 shadow-soft">
       <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-2">
-          <Database className="w-5 h-5 text-blue-400" />
-          <h3 className="font-semibold text-sm text-slate-100">Base Normativa Activa</h3>
+        <div className="flex items-center space-x-2.5">
+          <div className="w-8 h-8 rounded-lg bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-700">
+            <Database className="w-4 h-4" />
+          </div>
+          <div>
+            <h3 className="font-semibold text-sm text-slate-900">Base Normativa Activa</h3>
+            <p className="text-[11px] text-slate-500">Legislación colombiana incorporada para consultas</p>
+          </div>
         </div>
         {health && (
-          <span className="text-[11px] font-mono text-emerald-400 bg-emerald-950/40 border border-emerald-800/60 px-2 py-0.5 rounded">
-            {health.vector_store.total_chunks} fragmentos indexados
+          <span className="text-[11px] font-medium text-teal-800 bg-teal-50 border border-teal-200 px-2.5 py-1 rounded-lg flex items-center gap-1.5 shadow-soft">
+            <span className="w-1.5 h-1.5 rounded-full bg-teal-600" />
+            Normativa activa
           </span>
         )}
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-3 pt-1">
         {baseNormas.map((norma, idx) => (
           <div
             key={idx}
-            className="p-3 bg-slate-950/60 border border-slate-800/80 rounded-lg space-y-1.5"
+            className="p-3.5 bg-white border border-cream-200 rounded-xl space-y-2 hover:border-teal-300 transition-all duration-150 shadow-soft"
           >
             <div className="flex items-center justify-between">
-              <span className="font-semibold text-xs text-slate-200">{norma.title}</span>
-              <span className={`text-[10px] px-2 py-0.5 rounded border ${norma.badgeColor}`}>
+              <div className="flex items-center space-x-2">
+                <BookOpen className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                <span className="font-semibold text-xs text-slate-900">{norma.title}</span>
+              </div>
+              <span className={`text-[10px] font-medium px-2 py-0.5 rounded-md border ${norma.badgeColor}`}>
                 {norma.category}
               </span>
             </div>
-            <p className="text-[11px] text-slate-400">{norma.sub}</p>
-            <p className="text-[10px] font-mono text-slate-500 pt-1 border-t border-slate-900">
-              Cobertura: {norma.articles}
-            </p>
+            <p className="text-[11px] text-slate-600 leading-relaxed">{norma.sub}</p>
+            <div className="text-[10px] font-mono text-slate-500 pt-2 border-t border-cream-200 flex items-center gap-1">
+              <ShieldCheck className="w-3 h-3 text-teal-700 shrink-0" />
+              <span>Artículos de consulta frecuente: {norma.articles}</span>
+            </div>
           </div>
         ))}
       </div>

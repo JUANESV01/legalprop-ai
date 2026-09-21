@@ -1,59 +1,66 @@
 import React from 'react';
-import { Scale, Sparkles, Database, ExternalLink } from 'lucide-react';
+import { Logo } from './Logo';
+import { FileUp, Server, Info } from 'lucide-react';
 import { BackendHealthResponse } from '../types';
 
 interface HeaderProps {
   health: BackendHealthResponse | null;
   onOpenDocuments: () => void;
+  onOpenAbout: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ health, onOpenDocuments }) => {
+export const Header: React.FC<HeaderProps> = ({ health, onOpenDocuments, onOpenAbout }) => {
+  const isHealthy = health?.status === 'healthy';
+
   return (
-    <header className="h-16 border-b border-slate-800 bg-slate-950/80 backdrop-blur-md px-6 flex items-center justify-between sticky top-0 z-30">
-      <div className="flex items-center space-x-3">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-700 via-indigo-600 to-amber-500 p-0.5 flex items-center justify-center shadow-lg shadow-blue-500/10">
-          <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
-            <Scale className="w-5 h-5 text-amber-400" />
-          </div>
-        </div>
-        <div>
-          <div className="flex items-center space-x-2">
-            <h1 className="font-bold text-lg text-slate-100 tracking-tight flex items-center gap-1.5">
-              LegalProp <span className="text-amber-400">AI</span>
-            </h1>
-            <span className="px-2 py-0.5 text-[10px] font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-md">
-              RAG + Gemini 3.7
-            </span>
-          </div>
-          <p className="text-xs text-slate-400">Asistente Normativo para Arriendos y Propiedad Horizontal</p>
-        </div>
+    <header className="h-16 border-b border-cream-200 bg-cream-50/95 backdrop-blur-sm px-4 sm:px-6 flex items-center justify-between sticky top-0 z-30 transition-colors shadow-soft">
+      <div className="flex items-center space-x-4">
+        <Logo size="md" showText={true} />
+        <div className="hidden lg:block h-5 w-px bg-cream-300" />
+        <p className="hidden lg:block text-xs text-slate-600 font-medium tracking-wide">
+          Consultas Normativas • <span className="text-teal-700 font-semibold">Arriendos & Propiedad Horizontal</span>
+        </p>
       </div>
 
-      <div className="flex items-center space-x-4">
-        {health && (
-          <div className="hidden md:flex items-center space-x-2 text-xs text-slate-400 bg-slate-900/60 border border-slate-800 px-3 py-1.5 rounded-lg">
-            <div className={`w-2 h-2 rounded-full ${health.status === 'healthy' ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
-            <span>ChromaDB: <strong className="text-slate-200">{health.vector_store.total_chunks} fragmentos</strong></span>
-          </div>
-        )}
+      <div className="flex items-center space-x-2.5 sm:space-x-3">
+        {/* Estado del Sistema */}
+        <div className="flex items-center space-x-2 text-xs bg-teal-50/90 border border-teal-200 px-3 py-1.5 rounded-lg">
+          <div className={`w-2 h-2 rounded-full ${isHealthy ? 'bg-teal-600' : 'bg-amber-500'}`} />
+          <span className="text-teal-900 font-medium text-[11px]">
+            {isHealthy ? 'Base normativa activa' : 'Conectando servicio...'}
+          </span>
+        </div>
 
+        {/* Botón Gestor Documental */}
         <button
           onClick={onOpenDocuments}
-          className="flex items-center space-x-2 text-xs font-medium bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700/80 px-3.5 py-1.5 rounded-lg transition-colors"
-          title="Ver o cargar normativas base"
+          className="flex items-center space-x-1.5 text-xs font-semibold bg-teal-700 hover:bg-teal-800 text-white px-3 py-1.5 rounded-lg shadow-soft transition-all duration-150 active:scale-95"
+          title="Cargar o consultar normativas y reglamentos"
         >
-          <Database className="w-4 h-4 text-blue-400" />
-          <span>Normativas</span>
+          <FileUp className="w-4 h-4 text-white stroke-[2.2]" />
+          <span className="hidden sm:inline">Documentos</span>
         </button>
 
+        {/* Botón Acerca del Proyecto */}
+        <button
+          onClick={onOpenAbout}
+          className="flex items-center space-x-1.5 text-xs text-slate-700 hover:text-slate-900 bg-cream-100 hover:bg-cream-200 border border-cream-300 px-2.5 py-1.5 rounded-lg transition-colors font-medium"
+          title="Información sobre LegalProp AI y marco normativo"
+        >
+          <Info className="w-3.5 h-3.5 text-teal-700" />
+          <span className="hidden md:inline">Acerca de</span>
+        </button>
+
+        {/* Enlace API Swagger */}
         <a
           href="http://localhost:8000/docs"
           target="_blank"
           rel="noreferrer"
-          className="hidden sm:flex items-center space-x-1 text-xs text-slate-400 hover:text-slate-200 transition-colors"
+          className="hidden xl:flex items-center space-x-1 text-xs text-slate-600 hover:text-slate-900 bg-cream-100 hover:bg-cream-200 border border-cream-300 px-2 py-1.5 rounded-lg transition-colors"
+          title="Documentación técnica de la API"
         >
-          <span>Swagger API</span>
-          <ExternalLink className="w-3.5 h-3.5" />
+          <Server className="w-3.5 h-3.5 text-slate-500" />
+          <span>API</span>
         </a>
       </div>
     </header>

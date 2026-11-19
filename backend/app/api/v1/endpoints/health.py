@@ -10,15 +10,21 @@ router = APIRouter()
 @router.get("/", include_in_schema=False)
 def health_check():
     stats = rag_engine.get_collection_stats()
-    gemini_configured = bool(settings.GEMINI_API_KEY and not settings.GEMINI_API_KEY.startswith("AIzaSyYour"))
-
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "service": settings.PROJECT_NAME,
         "version": settings.VERSION,
         "environment": settings.ENVIRONMENT,
-        "gemini_api_configured": gemini_configured,
+        "gemini_api_configured": settings.is_gemini_configured,
         "gemini_model": settings.GEMINI_MODEL,
+        "features": {
+            "sse_streaming": True,
+            "jwt_auth": True,
+            "pdf_export": True,
+            "ipc_calculator": True,
+            "web_grounding": True,
+            "multi_format_docs": ["pdf", "docx", "xlsx", "odt", "txt", "md", "png", "jpg", "webp"],
+        },
         "vector_store": stats,
     }

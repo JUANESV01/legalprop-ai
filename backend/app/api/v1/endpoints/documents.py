@@ -1,107 +1,111 @@
-import uuid
+import hashlib
+import io
 import logging
+import uuid
+import zipfile
+import xml.etree.ElementTree as ET
 from typing import Optional
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from sqlalchemy import or_
+from sqlalchemy.orm import Session
+from app.core.config import settings
+from app.core.security import get_guest_session_id, get_optional_user, resolve_owner_scope
+from app.db.database import get_db
+from app.models.db_models import AuditLog, DocumentRecord, User
 from app.models.schemas.document import (
-    DocumentUploadRequest,
-    IngestResult,
     DocumentListResponse,
     DocumentSummary,
+    DocumentUploadRequest,
+    IngestResult,
 )
+from app.services.gemini_service import gemini_service
 from app.services.rag_engine import rag_engine
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-
-@router.post(
-    "/ingest",
-    response_model=IngestResult,
-    summary="Ingestar Texto Normativo Directo",
-    description="Segmenta e indexa un cuerpo normativo en el almacén vectorial ChromaDB."
-)
-def ingest_text_document(payload: DocumentUploadRequest):
-    if not payload.content or not payload.content.strip():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="El contenido del documento no puede estar vacío."
-        )
-
-    doc_id = str(uuid.uuid4())[:8]
-    chunks_count = rag_engine.ingest_document(
-        doc_id=doc_id,
-        title=payload.title,
-        category=payload.category,
-        content=payload.content,
-        norma_numero=payload.norma_numero or payload.title
-    )
-
-    return IngestResult(
-        document_id=doc_id,
-        title=payload.title,
-        chunks_created=chunks_count,
-        status="success",
-        message=f"Se indexaron {chunks_count} fragmentos exitosamente."
-    )
+IMAGE_MIME_MAP = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "webp": "image/webp",
+}
 
 
-@router.post(
-    "/upload",
-    response_model=IngestResult,
-    summary="Subir Archivo de Norma o Reglamento (.md, .txt)",
-    description="Carga e indexa un archivo de texto o markdown en el motor RAG."
-)
 def extract_text_from_file(filename: str, content_bytes: bytes) -> str:
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    
-    if ext in ["txt", "md"]:
-        return content_bytes.decode("utf-8", errors="replace")
+    """
+    Extrae texto real y estructurado de archivos PDF, DOCX, XLSX/XLS, ODT, TXT, MD
+    e imágenes (con lectura OCR multimodal Gemini cuando está configurada).
+    """
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in (filename or "") else ""
 
-    elif ext == "pdf":
+    if ext in ["txt", "md", "csv"]:
+        for enc in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
+            try:
+                text = content_bytes.decode(enc)
+                if text.strip():
+                    return text.strip()
+            except UnicodeDecodeError:
+                continue
+        text = content_bytes.decode("utf-8", errors="replace").strip()
+        if not text:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="El archivo de texto no contiene contenido legible.",
+            )
+        return text
+
+    if ext == "pdf":
         try:
-            import io
             import pypdf
+
             reader = pypdf.PdfReader(io.BytesIO(content_bytes))
             pages_text = []
             for idx, page in enumerate(reader.pages):
-                text = page.extract_text()
-                if text and text.strip():
+                text = page.extract_text() or ""
+                if text.strip():
                     pages_text.append(f"--- [Página {idx + 1}] ---\n{text.strip()}")
             if not pages_text:
-                raise ValueError("El archivo PDF no contiene capas de texto digital legible.")
+                raise ValueError(
+                    "El PDF no contiene capas de texto seleccionable (puede ser un escaneo de solo imagen)."
+                )
             return "\n\n".join(pages_text)
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error procesando PDF '{filename}': {e}")
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"No se pudo extraer texto del PDF ({filename}): {str(e)}"
+                detail=f"No se pudo extraer texto del PDF ({filename}): {str(e)}",
             )
 
-    elif ext == "docx":
+    if ext == "docx":
         try:
-            import io
             import docx
+
             doc = docx.Document(io.BytesIO(content_bytes))
-            parts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+            parts = [p.text.strip() for p in doc.paragraphs if p.text and p.text.strip()]
             for table in doc.tables:
                 for row in table.rows:
-                    cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                    cells = [cell.text.strip() for cell in row.cells if cell.text and cell.text.strip()]
                     if cells:
                         parts.append(" | ".join(cells))
             if not parts:
-                raise ValueError("El archivo Word no contiene texto extraíble.")
+                raise ValueError("El archivo Word (.docx) no contiene texto extraíble.")
             return "\n\n".join(parts)
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error procesando DOCX '{filename}': {e}")
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Error al leer documento Word (.docx): {str(e)}"
+                detail=f"Error al leer documento Word (.docx): {str(e)}",
             )
 
-    elif ext in ["xlsx", "xls"]:
+    if ext in ["xlsx", "xls"]:
         try:
-            import io
             import openpyxl
+
             wb = openpyxl.load_workbook(io.BytesIO(content_bytes), data_only=True)
             sheet_text = []
             for name in wb.sheetnames:
@@ -116,91 +120,307 @@ def extract_text_from_file(filename: str, content_bytes: bytes) -> str:
             if not sheet_text:
                 raise ValueError("El libro de Excel está vacío o no tiene celdas con datos.")
             return "\n".join(sheet_text)
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error procesando Excel '{filename}': {e}")
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Error al procesar archivo Excel (.xlsx): {str(e)}"
+                detail=f"Error al procesar archivo Excel ({filename}): {str(e)}",
             )
 
-    elif ext == "odt":
+    if ext == "odt":
         try:
-            import io
-            import zipfile
-            import xml.etree.ElementTree as ET
             with zipfile.ZipFile(io.BytesIO(content_bytes)) as z:
                 xml_data = z.read("content.xml")
                 root = ET.fromstring(xml_data)
-                text = "".join(root.itertext())
-                return text.strip()
+                text = " ".join(t.strip() for t in root.itertext() if t and t.strip())
+                if not text:
+                    raise ValueError("El archivo ODT está vacío.")
+                return text
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error procesando ODT '{filename}': {e}")
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Error al leer archivo ODT: {str(e)}"
+                detail=f"Error al leer archivo ODT: {str(e)}",
             )
 
-    elif ext in ["png", "jpg", "jpeg", "webp"]:
-        # Documentos o evidencias fotográficas
-        return f"[Evidencia Gráfica / Imagen de Soporte: {filename} - Tamaño: {len(content_bytes)} bytes]"
+    if ext in IMAGE_MIME_MAP:
+        return gemini_service.extract_text_from_image(
+            image_bytes=content_bytes,
+            mime_type=IMAGE_MIME_MAP[ext],
+            filename=filename,
+        )
 
-    else:
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            f"Formato '.{ext}' no soportado. Formatos admitidos: "
+            ".pdf, .docx, .xlsx, .odt, .txt, .md, .csv, .png, .jpg, .jpeg, .webp"
+        ),
+    )
+
+
+@router.post(
+    "/ingest",
+    response_model=IngestResult,
+    summary="Ingestar Texto Normativo Directo",
+    description="Segmenta e indexa un cuerpo normativo o contrato en ChromaDB aislado al espacio del usuario.",
+)
+def ingest_text_document(
+    payload: DocumentUploadRequest,
+    current_user: Optional[User] = Depends(get_optional_user),
+    guest_session_id: Optional[str] = Depends(get_guest_session_id),
+    db: Session = Depends(get_db),
+):
+    if not payload.content or not payload.content.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Formato '.{ext}' no soportado. Formatos admitidos: .pdf, .docx, .xlsx, .odt, .txt, .md, .png, .jpg, .webp"
+            detail="El contenido del documento no puede estar vacío.",
         )
+
+    doc_id = str(uuid.uuid4())[:12]
+    owner_scope = resolve_owner_scope(current_user, guest_session_id)
+    content_clean = payload.content.strip()
+
+    chunks_count = rag_engine.ingest_document(
+        doc_id=doc_id,
+        title=payload.title,
+        category=payload.category,
+        content=content_clean,
+        norma_numero=payload.norma_numero or payload.title,
+        owner_scope=owner_scope,
+        is_public=False,
+        filename=f"{payload.title}.txt",
+    )
+
+    doc_rec = DocumentRecord(
+        id=doc_id,
+        owner_id=current_user.id if current_user else None,
+        guest_session_id=None if current_user else (guest_session_id or "anonymous"),
+        title=payload.title,
+        filename=f"{payload.title}.txt",
+        file_type="txt",
+        category=payload.category,
+        norma_numero=payload.norma_numero or payload.title,
+        chunks_count=chunks_count,
+        file_size_bytes=len(content_clean.encode("utf-8")),
+        content_preview=content_clean[:600],
+        content_hash=hashlib.sha256(content_clean.encode("utf-8")).hexdigest(),
+        is_public=False,
+    )
+    db.add(doc_rec)
+    if current_user:
+        db.add(AuditLog(user_id=current_user.id, action="DOCUMENT_INGEST", details=f"{payload.title} ({chunks_count} chunks)"))
+    db.commit()
+
+    return IngestResult(
+        document_id=doc_id,
+        title=payload.title,
+        filename=doc_rec.filename,
+        file_type="txt",
+        category=payload.category,
+        chunks_created=chunks_count,
+        status="success",
+        message=f"Se indexaron {chunks_count} fragmentos exitosamente.",
+        preview=doc_rec.content_preview,
+    )
 
 
 @router.post(
     "/upload",
     response_model=IngestResult,
-    summary="Subir Archivo Multiformato de Norma o Reglamento (.pdf, .docx, .xlsx, .odt, .txt, .md, imágenes)",
-    description="Carga, extrae el texto e indexa documentos en el motor RAG de ChromaDB."
+    summary="Subir Archivo Multiformato (.pdf, .docx, .xlsx, .odt, .txt, .md, imágenes)",
+    description="Carga, extrae el texto real e indexa documentos privados en el motor RAG de ChromaDB con aislamiento por usuario (RNF04).",
 )
 async def upload_document_file(
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
-    category: str = Form("arriendo"),
+    category: str = Form("manual_interno"),
     norma_numero: Optional[str] = Form(None),
+    current_user: Optional[User] = Depends(get_optional_user),
+    guest_session_id: Optional[str] = Depends(get_guest_session_id),
+    db: Session = Depends(get_db),
 ):
     content_bytes = await file.read()
     if len(content_bytes) == 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="El archivo proporcionado está vacío (0 bytes)."
+            detail="El archivo proporcionado está vacío (0 bytes).",
         )
 
-    # Extraer texto según formato
-    content_str = extract_text_from_file(file.filename, content_bytes)
-    doc_title = title or file.filename.rsplit(".", 1)[0].replace("_", " ").replace("-", " ").title()
+    max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    if len(content_bytes) > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"El archivo supera el tamaño máximo permitido ({settings.MAX_UPLOAD_SIZE_MB} MB).",
+        )
 
-    doc_id = str(uuid.uuid4())[:8]
+    filename = file.filename or "documento.txt"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
+
+    # Extraer texto real según formato
+    content_str = extract_text_from_file(filename, content_bytes)
+    doc_title = (
+        (title or "").strip()
+        or filename.rsplit(".", 1)[0].replace("_", " ").replace("-", " ").strip().title()
+    )
+
+    doc_id = str(uuid.uuid4())[:12]
+    owner_scope = resolve_owner_scope(current_user, guest_session_id)
+
     chunks_count = rag_engine.ingest_document(
         doc_id=doc_id,
         title=doc_title,
         category=category,
         content=content_str,
-        norma_numero=norma_numero or doc_title
+        norma_numero=norma_numero or doc_title,
+        owner_scope=owner_scope,
+        is_public=False,
+        filename=filename,
     )
+
+    if chunks_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No se pudo indexar contenido útil del archivo.",
+        )
+
+    doc_rec = DocumentRecord(
+        id=doc_id,
+        owner_id=current_user.id if current_user else None,
+        guest_session_id=None if current_user else (guest_session_id or "anonymous"),
+        title=doc_title,
+        filename=filename,
+        file_type=ext,
+        category=category,
+        norma_numero=norma_numero or doc_title,
+        chunks_count=chunks_count,
+        file_size_bytes=len(content_bytes),
+        content_preview=content_str[:650],
+        content_hash=hashlib.sha256(content_bytes).hexdigest(),
+        is_public=False,
+    )
+    db.add(doc_rec)
+    if current_user:
+        db.add(
+            AuditLog(
+                user_id=current_user.id,
+                action="DOCUMENT_UPLOAD",
+                details=f"{filename} ({ext}, {chunks_count} chunks)",
+            )
+        )
+    db.commit()
 
     return IngestResult(
         document_id=doc_id,
         title=doc_title,
+        filename=filename,
+        file_type=ext,
+        category=category,
         chunks_created=chunks_count,
         status="success",
-        message=f"Archivo '{file.filename}' procesado e indexado con {chunks_count} fragmentos."
+        message=f"Archivo '{filename}' leído e indexado con {chunks_count} fragmentos listos para consulta.",
+        preview=doc_rec.content_preview,
     )
 
 
 @router.get(
     "",
     response_model=DocumentListResponse,
-    summary="Listar Estado del Corpus Normativo"
+    summary="Listar Normas Base y Documentos Privados del Usuario (RNF04)",
 )
 @router.get("/", include_in_schema=False, response_model=DocumentListResponse)
-def list_documents():
+def list_documents(
+    current_user: Optional[User] = Depends(get_optional_user),
+    guest_session_id: Optional[str] = Depends(get_guest_session_id),
+    db: Session = Depends(get_db),
+):
+    # Mostrar SOLO documentos públicos + los documentos privados del usuario o sesión actual
+    if current_user:
+        query = db.query(DocumentRecord).filter(
+            or_(
+                DocumentRecord.is_public == True,  # noqa: E712
+                DocumentRecord.owner_id == current_user.id,
+            )
+        )
+    elif guest_session_id:
+        query = db.query(DocumentRecord).filter(
+            or_(
+                DocumentRecord.is_public == True,  # noqa: E712
+                DocumentRecord.guest_session_id == guest_session_id,
+            )
+        )
+    else:
+        query = db.query(DocumentRecord).filter(DocumentRecord.is_public == True)  # noqa: E712
+
+    records = query.order_by(DocumentRecord.is_public.desc(), DocumentRecord.created_at.desc()).all()
     stats = rag_engine.get_collection_stats()
+
+    summaries = [
+        DocumentSummary(
+            id=r.id,
+            title=r.title,
+            filename=r.filename,
+            file_type=r.file_type,
+            category=r.category,
+            norma_numero=r.norma_numero,
+            chunks_count=r.chunks_count,
+            file_size_bytes=r.file_size_bytes,
+            is_public=r.is_public,
+            created_at=r.created_at,
+            preview=r.content_preview,
+        )
+        for r in records
+    ]
+
     return DocumentListResponse(
-        total=stats.get("total_chunks", 0),
-        documents=[]  # En producción se consulta la tabla relacional de metadatos
+        total=len(summaries),
+        total_chunks=stats.get("total_chunks", 0),
+        documents=summaries,
     )
+
+
+@router.delete(
+    "/{doc_id}",
+    summary="Eliminar un documento privado cargado por el usuario",
+)
+def delete_document(
+    doc_id: str,
+    current_user: Optional[User] = Depends(get_optional_user),
+    guest_session_id: Optional[str] = Depends(get_guest_session_id),
+    db: Session = Depends(get_db),
+):
+    doc_rec = db.query(DocumentRecord).filter(DocumentRecord.id == doc_id).first()
+    if not doc_rec:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Documento no encontrado.",
+        )
+
+    if doc_rec.is_public:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Las leyes marco base del sistema no pueden ser eliminadas.",
+        )
+
+    # Verificar propiedad estricta (RNF04)
+    is_owner = (
+        (current_user and doc_rec.owner_id == current_user.id)
+        or (not current_user and guest_session_id and doc_rec.guest_session_id == guest_session_id)
+    )
+    if not is_owner:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permiso para eliminar este documento.",
+        )
+
+    rag_engine.delete_document(doc_rec.id)
+    db.delete(doc_rec)
+    if current_user:
+        db.add(AuditLog(user_id=current_user.id, action="DOCUMENT_DELETE", details=doc_rec.title))
+    db.commit()
+
+    return {"status": "success", "message": f"Documento '{doc_rec.title}' eliminado de tu base de consulta."}

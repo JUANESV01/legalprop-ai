@@ -1,28 +1,44 @@
 import logging
-from typing import List, Optional, Union
+import time
+from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 from google import genai
 from google.genai import types
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_LEGAL_PROMPT = """Eres LegalProp, un asesor jurídico riguroso y didáctico especializado en Derecho Inmobiliario colombiano (Ley 820 de 2003 de Arrendamientos Urbanos y Ley 675 de 2001 de Propiedad Horizontal).
+SYSTEM_LEGAL_PROMPT = """Eres LegalProp AI, un asistente jurídico experto, riguroso y didáctico especializado en Derecho Inmobiliario de Colombia:
+- Ley 820 de 2003 (Arrendamiento de Vivienda Urbana)
+- Ley 675 de 2001 (Régimen de Propiedad Horizontal)
+- Reglamentos internos de copropiedad y contratos privados cargados por el usuario.
 
-Tus principios son:
-1. PRECISIÓN Y RIGOR JURÍDICO: Basa tu análisis en los artículos suministrados en el CONTEXTO NORMATIVO.
-2. CITACIÓN PUNTUAL: Cita explícitamente los artículos pertinentes (ej. 'Conforme al Artículo 16 de la Ley 820 de 2003...').
-3. CLARIDAD Y ESTRUCTURA:
-   - Respuesta directa y concreta a la duda planteada.
-   - Sustento legal y explicación práctica de derechos y obligaciones.
-   - Recomendaciones de acción para el ciudadano.
-4. HONESTIDAD: Si el contexto no contiene la respuesta para un caso específico o hay un vacío normativo, dilo con naturalidad. No inventes leyes ni decretos inexistentes.
+REGLAS ESTRICTAS DE CUMPLIMIENTO OBLIGATORIO:
+1. CERO ALUCINACIONES (RNF01): Basa tus conclusiones exclusivamente en:
+   a) Los DOCUMENTOS PRIVADOS cargados por el usuario presentes en el CONTEXTO NORMATIVO (cuando existan, dales máxima prioridad para responder dudas particulares del conjunto o contrato, citando el nombre del archivo/documento y sección o página exacta).
+   b) Los artículos de leyes marco suministrados en el CONTEXTO NORMATIVO.
+   c) Los resultados verificados de búsqueda web / Google Search (cuando estén activos para IPC, DANE o jurisprudencia reciente).
+   Si el contexto no contiene evidencia suficiente para un punto específico, dilo explícitamente con honestidad y transparencia; JAMÁS inventes artículos, decretos ni porcentajes.
+2. CLARIDAD PEDAGÓGICA PRIMERO (RNF03): Explica primero en lenguaje cotidiano, claro y accesible para ciudadanos sin formación jurídica, y luego presenta el sustento normativo formal.
+3. CITACIÓN EXPLÍCITA (HU04): Cita siempre de forma puntual la ley, artículo, parágrafo, o el nombre exacto del documento subido por el usuario (ej. "Según tu documento 'Reglamento Conjunto X' (Página 4)..." o "Conforme al Artículo 20 de la Ley 820 de 2003...").
+4. ESTRUCTURA CLARA EN MARKDOWN:
+   - **Respuesta directa:** Conclusión práctica y comprensible.
+   - **Sustento legal y documental:** Artículos aplicables o cláusulas del archivo cargado.
+   - **Qué puedes hacer (pasos recomendados):** Acciones concretas para el usuario.
+5. ALCANCE TEMÁTICO: Si la pregunta es totalmente ajena a arriendos, propiedad horizontal, convivencia vecinal o los documentos cargados por el usuario, aclara cortésmente tu especialidad.
+6. DESAMBIGUACIÓN GUIADA (RF09): Si falta un dato determinante (por ejemplo, si el inmueble es vivienda urbana o local comercial, o si está en propiedad horizontal o es casa independiente), da una orientación breve y formula 1 o 2 preguntas concretas al final para afinar la respuesta.
 """
+
+ROLE_CONTEXT_HINTS = {
+    "inquilino": "El usuario tiene perfil de INQUILINO / ARRENDATARIO. Enfoca las recomendaciones prácticas en la protección de sus derechos y cumplimiento de deberes como arrendatario.",
+    "propietario": "El usuario tiene perfil de PROPIETARIO / ARRENDADOR. Enfoca las recomendaciones en la correcta administración de su inmueble, reajustes legales y defensa de sus derechos de copropietario.",
+    "administrador": "El usuario tiene perfil de ADMINISTRADOR DE PROPIEDAD HORIZONTAL. Incluye precisiones procedimentales útiles para redactar comunicados, llamados de atención y actas con debido proceso.",
+}
 
 
 class GeminiService:
     FALLBACK_MODELS = [
         "gemini-3.5-flash-lite",
-        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash",
         "gemini-3.7-flash",
     ]
 
@@ -34,7 +50,7 @@ class GeminiService:
 
     @property
     def client(self) -> Optional[genai.Client]:
-        if self._client is None and self.api_key and not self.api_key.startswith("AIzaSyYour"):
+        if self._client is None and settings.is_gemini_configured:
             try:
                 self._client = genai.Client(api_key=self.api_key)
             except Exception as e:
@@ -42,82 +58,333 @@ class GeminiService:
                 self._client = None
         return self._client
 
+    def _build_system_instruction(
+        self,
+        system_instruction: Optional[str] = None,
+        user_role: Optional[str] = None,
+    ) -> str:
+        base = system_instruction or SYSTEM_LEGAL_PROMPT
+        if user_role and user_role in ROLE_CONTEXT_HINTS:
+            return f"{base}\n\nPERFIL DEL USUARIO ACTUAL: {ROLE_CONTEXT_HINTS[user_role]}"
+        return base
+
+    def _build_user_content(
+        self,
+        prompt: str,
+        context: str = "",
+        history: Optional[List[Dict[str, str]]] = None,
+        has_user_docs: bool = False,
+        enable_google_search: bool = False,
+    ) -> str:
+        parts: List[str] = []
+
+        if history:
+            recent = history[-6:]
+            hist_lines = []
+            for h in recent:
+                role_label = "Usuario" if h.get("role") == "user" else "LegalProp AI"
+                hist_lines.append(f"{role_label}: {h.get('content', '')[:500]}")
+            parts.append("### HISTORIAL RECIENTE DE LA CONVERSACIÓN:\n" + "\n".join(hist_lines))
+
+        if context:
+            parts.append(f"### CONTEXTO NORMATIVO Y DOCUMENTAL RECUPERADO:\n{context}")
+
+        instructions = []
+        if has_user_docs:
+            instructions.append(
+                "IMPORTANTE: El contexto incluye fragmentos de archivos/documentos cargados por el propio usuario. "
+                "Léeos con atención, basa tu respuesta directamente en ellos cuando apliquen y cita el nombre del archivo."
+            )
+        if enable_google_search:
+            instructions.append(
+                "Tienes habilitada la herramienta de búsqueda en Google (Google Search). Úsala para verificar datos actualizados "
+                "(como el IPC anual certificado por el DANE, tasas vigentes o jurisprudencia reciente de la Corte Constitucional de Colombia) "
+                "y menciona explícitamente la fuente consultada."
+            )
+
+        if instructions:
+            parts.append("### INSTRUCCIONES ADICIONALES PARA ESTA CONSULTA:\n" + "\n".join(f"- {i}" for i in instructions))
+
+        parts.append(f"### CONSULTA DEL USUARIO:\n{prompt}")
+        return "\n\n".join(parts)
+
+    def _get_models_chain(self) -> List[str]:
+        models_to_try = [self.model_name]
+        for m in self.FALLBACK_MODELS:
+            if m not in models_to_try:
+                models_to_try.append(m)
+        return models_to_try
+
+    @staticmethod
+    def _extract_grounding_sources(response_obj: Any) -> List[Dict[str, str]]:
+        """Extrae URLs y títulos reales del grounding_metadata de Google Search."""
+        sources: List[Dict[str, str]] = []
+        seen_urls = set()
+        try:
+            candidates = getattr(response_obj, "candidates", None) or []
+            for cand in candidates:
+                gm = getattr(cand, "grounding_metadata", None)
+                if not gm:
+                    continue
+                chunks = getattr(gm, "grounding_chunks", None) or []
+                for chunk in chunks:
+                    web = getattr(chunk, "web", None)
+                    if not web:
+                        continue
+                    uri = getattr(web, "uri", None) or ""
+                    title = getattr(web, "title", None) or uri
+                    if uri and uri not in seen_urls:
+                        seen_urls.add(uri)
+                        sources.append({
+                            "title": title,
+                            "url": uri,
+                            "snippet": f"Fuente verificada en tiempo real mediante Google Search ({title}).",
+                        })
+        except Exception as e:
+            logger.debug(f"No se pudieron extraer grounding_chunks: {e}")
+        return sources
+
+    def _build_config(
+        self,
+        temperature: float,
+        full_system_instruction: str,
+        enable_google_search: bool = False,
+    ) -> types.GenerateContentConfig:
+        config_kwargs: Dict[str, Any] = {
+            "temperature": temperature,
+            "system_instruction": full_system_instruction,
+            "max_output_tokens": 2500,
+        }
+        if enable_google_search:
+            config_kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+        else:
+            config_kwargs["automatic_function_calling"] = types.AutomaticFunctionCallingConfig(disable=True)
+        return types.GenerateContentConfig(**config_kwargs)
+
+    def generate_response_with_sources(
+        self,
+        prompt: str,
+        context: str = "",
+        temperature: float = 0.2,
+        system_instruction: Optional[str] = None,
+        enable_google_search: bool = False,
+        history: Optional[List[Dict[str, str]]] = None,
+        user_role: Optional[str] = None,
+        has_user_docs: bool = False,
+    ) -> Tuple[str, List[Dict[str, str]]]:
+        """
+        Genera respuesta jurídica con reintento exponencial (RNF06), fallback de modelos
+        y soporte nativo de Google Search Grounding. Retorna (texto, fuentes_web).
+        """
+        full_system_instruction = self._build_system_instruction(system_instruction, user_role)
+        user_content = self._build_user_content(
+            prompt=prompt,
+            context=context,
+            history=history,
+            has_user_docs=has_user_docs,
+            enable_google_search=enable_google_search,
+        )
+
+        if not self.client:
+            logger.warning("GEMINI_API_KEY no configurada. Retornando respuesta de contingencia.")
+            fallback = (
+                f"**[Modo sin conexión a Gemini API]**\n\n"
+                f"Configura tu clave `GEMINI_API_KEY` en `backend/.env` para habilitar respuestas generativas.\n\n"
+                f"**Contexto recuperado para tu consulta:**\n{context[:700]}"
+            )
+            return fallback, []
+
+        last_error: Optional[Exception] = None
+        use_search = enable_google_search
+
+        for model in self._get_models_chain():
+            # Hasta 2 intentos por modelo (RNF06). Si Google Search Grounding excede cuota gratuita (429),
+            # conmuta automáticamente al mismo modelo sin la herramienta manteniendo el contexto web recuperado.
+            for attempt in range(2):
+                try:
+                    config = self._build_config(
+                        temperature=temperature,
+                        full_system_instruction=full_system_instruction,
+                        enable_google_search=use_search,
+                    )
+                    response = self.client.models.generate_content(
+                        model=model,
+                        contents=user_content,
+                        config=config,
+                    )
+                    if response and response.text:
+                        web_sources = self._extract_grounding_sources(response) if use_search else []
+                        return response.text.strip(), web_sources
+                except Exception as e:
+                    last_error = e
+                    err_str = str(e).lower()
+                    if use_search and any(
+                        tok in err_str
+                        for tok in ["tool", "google_search", "unsupported", "429", "resource_exhausted", "quota"]
+                    ):
+                        logger.warning(
+                            f"Google Search Grounding no disponible en '{model}' ({e}); continuando con contexto web y RAG."
+                        )
+                        use_search = False
+                        continue
+                    logger.warning(f"Fallo intento {attempt + 1} con modelo '{model}': {e}")
+                    if attempt == 0:
+                        time.sleep(0.6)
+
+        logger.error(f"Todos los modelos fallaron. Último error: {last_error}")
+        raise RuntimeError(f"Fallo en la inferencia con el servicio de IA: {str(last_error)}")
+
     def generate_response(
         self,
         prompt: str,
         context: str = "",
         temperature: float = 0.2,
-        system_instruction: Optional[str] = None
+        system_instruction: Optional[str] = None,
     ) -> str:
-        """
-        Genera respuesta jurídica fundamentada usando modelos de alta velocidad
-        (gemini-3.5-flash-lite) con conmutación por error (fallback) automática ante alta demanda.
-        """
-        full_system_instruction = system_instruction or SYSTEM_LEGAL_PROMPT
+        """Interfaz compatible con versiones anteriores y auditoría QA."""
+        text, _ = self.generate_response_with_sources(
+            prompt=prompt,
+            context=context,
+            temperature=temperature,
+            system_instruction=system_instruction,
+        )
+        return text
 
-        user_content = prompt
-        if context:
-            user_content = (
-                f"### CONTEXTO NORMATIVO APLICABLE:\n{context}\n\n"
-                f"### CONSULTA DEL USUARIO:\n{prompt}\n\n"
-                f"Por favor responde con claridad fundamentando con los artículos anteriores:"
-            )
+    def stream_response(
+        self,
+        prompt: str,
+        context: str = "",
+        temperature: float = 0.2,
+        system_instruction: Optional[str] = None,
+        enable_google_search: bool = False,
+        history: Optional[List[Dict[str, str]]] = None,
+        user_role: Optional[str] = None,
+        has_user_docs: bool = False,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """
+        Generador síncrono de streaming palabra por palabra (RF04 / HU05 / RNF02).
+        Emite dicts: {'type': 'token', 'text': ...} y al finalizar {'type': 'web_sources', 'sources': [...]}.
+        """
+        full_system_instruction = self._build_system_instruction(system_instruction, user_role)
+        user_content = self._build_user_content(
+            prompt=prompt,
+            context=context,
+            history=history,
+            has_user_docs=has_user_docs,
+            enable_google_search=enable_google_search,
+        )
 
         if not self.client:
-            logger.warning("GEMINI_API_KEY no configurada. Retornando respuesta de demostración.")
-            return (
-                f"[Modo Demostración - LegalProp]\n\n"
-                f"Se ha recibido la consulta: '{prompt}'.\n\n"
-                f"Configura una clave válida en `backend/.env` (GEMINI_API_KEY).\n\n"
-                f"Contexto normativo recuperado:\n{context[:400]}..."
+            demo = (
+                f"**[Modo sin API Key de Gemini]**\n\n"
+                f"Configura `GEMINI_API_KEY` en `backend/.env`.\n\n"
+                f"Extracto recuperado:\n{context[:500]}"
             )
+            yield {"type": "token", "text": demo}
+            return
 
-        # Cadena de modelos: primero el configurado, luego los de reserva
-        models_to_try = [self.model_name]
-        for m in self.FALLBACK_MODELS:
-            if m not in models_to_try:
-                models_to_try.append(m)
+        last_error: Optional[Exception] = None
+        use_search = enable_google_search
 
-        last_error = None
-        for model in models_to_try:
+        for model in self._get_models_chain():
             try:
-                config = types.GenerateContentConfig(
+                config = self._build_config(
                     temperature=temperature,
-                    system_instruction=full_system_instruction,
-                    max_output_tokens=2048,
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                    full_system_instruction=full_system_instruction,
+                    enable_google_search=use_search,
                 )
-                response = self.client.models.generate_content(
+                stream = self.client.models.generate_content_stream(
                     model=model,
                     contents=user_content,
                     config=config,
                 )
-                if response and response.text:
-                    return response.text.strip()
-            except Exception as e:
-                logger.warning(f"Fallo temporal con modelo '{model}': {e}. Probando alternativa...")
-                last_error = e
+                collected_sources: List[Dict[str, str]] = []
+                seen_urls = set()
+                emitted_any = False
 
-        logger.error(f"Todos los modelos de la cadena fallaron. Último error: {last_error}")
-        raise RuntimeError(f"Fallo en la inferencia con el servicio de IA: {str(last_error)}")
+                for chunk in stream:
+                    chunk_text = getattr(chunk, "text", None)
+                    if chunk_text:
+                        emitted_any = True
+                        yield {"type": "token", "text": chunk_text}
+                    if use_search:
+                        for src in self._extract_grounding_sources(chunk):
+                            if src["url"] not in seen_urls:
+                                seen_urls.add(src["url"])
+                                collected_sources.append(src)
+
+                if emitted_any:
+                    if collected_sources:
+                        yield {"type": "web_sources", "sources": collected_sources}
+                    return
+            except Exception as e:
+                last_error = e
+                err_str = str(e).lower()
+                logger.warning(f"Fallo streaming con modelo '{model}': {e}")
+                if use_search and any(
+                    tok in err_str
+                    for tok in ["tool", "google_search", "unsupported", "429", "resource_exhausted", "quota"]
+                ):
+                    use_search = False
+                    # Reintentar inmediatamente mismo modelo sin tool (mantiene contexto web en vivo)
+                    try:
+                        config = self._build_config(temperature, full_system_instruction, False)
+                        stream = self.client.models.generate_content_stream(
+                            model=model,
+                            contents=user_content,
+                            config=config,
+                        )
+                        emitted_any = False
+                        for chunk in stream:
+                            if getattr(chunk, "text", None):
+                                emitted_any = True
+                                yield {"type": "token", "text": chunk.text}
+                        if emitted_any:
+                            return
+                    except Exception as inner_e:
+                        last_error = inner_e
+                time.sleep(0.4)
+
+        raise RuntimeError(f"Fallo en el streaming de IA: {str(last_error)}")
+
+    def extract_text_from_image(self, image_bytes: bytes, mime_type: str, filename: str) -> str:
+        """Extrae texto legible de imágenes de documentos/circulares usando Gemini multimodal."""
+        if not self.client:
+            return f"[Imagen cargada: {filename} ({len(image_bytes)} bytes). Configura GEMINI_API_KEY para lectura OCR automática.]"
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=[
+                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                    (
+                        "Transcribe fielmente todo el texto visible en esta imagen de documento legal, "
+                        "circular, contrato o reglamento en español. Si hay tablas, presérvalas en texto legible. "
+                        "No inventes texto que no aparezca en la imagen."
+                    ),
+                ],
+                config=types.GenerateContentConfig(temperature=0.0, max_output_tokens=2048),
+            )
+            if response and response.text and response.text.strip():
+                return f"--- [Texto extraído de imagen: {filename}] ---\n{response.text.strip()}"
+        except Exception as e:
+            logger.warning(f"No se pudo transcribir imagen '{filename}' con Gemini Vision: {e}")
+        return f"[Evidencia Gráfica / Imagen de Soporte: {filename} - Tamaño: {len(image_bytes)} bytes]"
 
     def get_embedding(self, text: Union[str, List[str]]) -> List[float]:
-        """
-        Genera embeddings vectoriales para búsqueda semántica.
-        """
+        """Genera embeddings vectoriales para búsqueda semántica."""
         if not self.client:
             import hashlib
             seed = hashlib.sha256(str(text).encode("utf-8")).hexdigest()
-            return [(int(seed[i:i+2], 16) / 255.0) for i in range(0, 64, 2)]
+            return [(int(seed[i:i + 2], 16) / 255.0) for i in range(0, 64, 2)]
 
         try:
             res = self.client.models.embed_content(
                 model=self.embedding_model_name,
                 contents=text,
             )
-            if hasattr(res, 'embedding') and hasattr(res.embedding, 'values'):
+            if hasattr(res, "embedding") and hasattr(res.embedding, "values"):
                 return res.embedding.values
-            elif hasattr(res, 'embeddings') and len(res.embeddings) > 0:
+            elif hasattr(res, "embeddings") and len(res.embeddings) > 0:
                 return res.embeddings[0].values
             return []
         except Exception as e:

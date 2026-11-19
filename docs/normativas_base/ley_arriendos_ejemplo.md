@@ -24,8 +24,15 @@ Son obligaciones del arrendatario:
 ### Artículo 16. Prohibición de Depósitos o Cauciones Reales.
 En los contratos de arrendamiento para vivienda urbana no se podrán exigir depósitos en dinero efectivo u otra clase de cauciones reales, para garantizar el cumplimiento de las obligaciones que conforme a dichos contratos haya asumido el arrendatario. Tales garantías tampoco podrán estipularse indirectamente ni por interpuesta persona o mediante pactos adicionales.
 
+### Artículo 18. Renta de Arrendamiento y Tope Comercial.
+El precio mensual del arrendamiento será fijado por las partes en moneda legal, pero no podrá exceder el uno por ciento (1%) del valor comercial del inmueble o de la parte de él que se dé en arriendo. La estimación comercial para efectos del presente artículo no podrá exceder el equivalente a dos (2) veces el avalúo catastral vigente.
+
 ### Artículo 20. Fijación del Canon de Arrendamiento e Incremento Anual.
 Cada doce (12) meses de ejecución del contrato bajo un mismo precio, el arrendador podrá incrementar el canon hasta en una proporción que no sea superior al ciento por ciento (100%) del incremento que haya tenido el índice de precios al consumidor (IPC) en el año calendario inmediatamente anterior a aquel en que se deba efectuar el reajuste del canon, siempre y cuando el nuevo canon no exceda el uno por ciento (1%) del valor comercial del inmueble o de la parte de él que se dé en arriendo.
+Parágrafo. El arrendador que opte por incrementar el canon de arrendamiento deberá informarle al arrendatario el monto del incremento y la fecha en que se hará efectivo, a través del servicio postal autorizado o mediante el mecanismo de notificación personal expresamente establecido en el contrato, so pena de ser inoponible al arrendatario.
+
+### Artículo 21. Terminación por Mutuo Acuerdo.
+Las partes, en cualquier tiempo, y de común acuerdo podrán dar por terminado el contrato de arrendamiento de vivienda urbana sin lugar a indemnización.
 
 ### Artículo 22. Terminación por Parte del Arrendador y Causales de Restitución.
 Son causales para que el arrendador pueda pedir unilateralmente la terminación del contrato y la restitución del inmueble, las siguientes:

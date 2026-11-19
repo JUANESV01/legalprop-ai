@@ -3,6 +3,7 @@
 # ==========================================
 
 # Backups y Archivos Comprimidos
+.backups/
 *.zip
 *.tar.gz
 *.rar

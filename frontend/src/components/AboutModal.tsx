@@ -18,7 +18,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
           <div className="flex items-center space-x-3">
             <Logo size="sm" showText={true} />
             <span className="text-xs bg-teal-50 border border-teal-200 text-teal-800 font-semibold px-2.5 py-0.5 rounded-full">
-              v1.0.0
+              v2.0.0
             </span>
           </div>
           <button

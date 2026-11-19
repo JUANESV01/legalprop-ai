@@ -14,6 +14,7 @@ import {
   SlidersHorizontal,
   Calculator,
   FolderOpen,
+  Shield,
 } from 'lucide-react';
 import { ConversationSummary, UserProfile } from '../types';
 import { AuthTab } from '../features/auth/AuthModal';
@@ -36,6 +37,7 @@ interface SidebarProps {
   onOpenAbout: () => void;
   onOpenDocuments: () => void;
   onOpenIpc: () => void;
+  onOpenMasterPanel: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -56,6 +58,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenAbout,
   onOpenDocuments,
   onOpenIpc,
+  onOpenMasterPanel,
 }) => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
@@ -251,8 +254,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
         )}
       </div>
 
-      {/* Pie fijo izquierdo: Herramientas, Sobre el proyecto y Cuenta/Login */}
+      {/* Pie fijo izquierdo: Herramientas, Panel Master (si aplica), Sobre el proyecto y Cuenta/Login */}
       <div className="p-3 border-t border-cream-200 space-y-1 bg-cream-150">
+        {user?.role === 'master' && (
+          <button
+            type="button"
+            onClick={() => {
+              onOpenMasterPanel();
+              onCloseMobile();
+            }}
+            className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs font-semibold text-teal-900 bg-teal-50/90 hover:bg-teal-100/80 border border-teal-200 transition-colors mb-1"
+          >
+            <Shield className="w-3.5 h-3.5 text-teal-700" />
+            <span>Panel Master</span>
+          </button>
+        )}
+
         <button
           type="button"
           onClick={() => {

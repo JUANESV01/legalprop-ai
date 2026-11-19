@@ -13,6 +13,13 @@ class DocumentUploadRequest(BaseModel):
     jurisdiction: str = Field("Colombia", description="País o jurisdicción")
     year: Optional[int] = Field(None, description="Año de promulgación")
     content: Optional[str] = Field(None, description="Contenido de texto directo en Markdown o texto plano")
+    is_public: bool = Field(False, description="Indica si el documento pertenece al corpus común")
+
+
+class DocumentUpdateRequest(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=255)
+    category: Optional[str] = None
+    is_public: Optional[bool] = None
 
 
 class IngestResult(BaseModel):
@@ -22,6 +29,7 @@ class IngestResult(BaseModel):
     file_type: Optional[str] = None
     category: Optional[str] = None
     chunks_created: int
+    is_public: bool = False
     status: str
     message: str
     preview: Optional[str] = None

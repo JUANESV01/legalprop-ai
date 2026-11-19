@@ -110,6 +110,7 @@ class DocumentRecord(Base):
     chunks_count = Column(Integer, nullable=False, default=0)
     file_size_bytes = Column(Integer, nullable=False, default=0)
     content_preview = Column(Text, nullable=True)
+    extracted_content = Column(Text, nullable=True)  # Texto completo extraído para re-indexación automática en Render/Postgres
     content_hash = Column(String(64), nullable=True)
     is_public = Column(Boolean, default=False, nullable=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

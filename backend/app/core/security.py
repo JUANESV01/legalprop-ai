@@ -193,6 +193,16 @@ def get_current_user(
     return user
 
 
+def require_master_user(current_user: User = Depends(get_current_user)) -> User:
+    """Dependencia estricta para acciones administrativas internas."""
+    if current_user.role != "master":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permisos para acceder a este recurso.",
+        )
+    return current_user
+
+
 def get_guest_session_id(
     x_guest_session: Optional[str] = Header(default=None, alias="X-Guest-Session"),
 ) -> Optional[str]:

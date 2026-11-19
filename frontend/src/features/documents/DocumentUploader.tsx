@@ -1,17 +1,28 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Upload, CheckCircle2, AlertCircle, Loader2, FileText, X } from 'lucide-react';
 import { apiService } from '../../services/api';
 import { DocumentUploadResponse } from '../../types';
 
 interface DocumentUploaderProps {
   onUploadSuccess: (uploaded?: DocumentUploadResponse) => void;
+  isMaster?: boolean;
+  defaultPublic?: boolean;
 }
 
-export const DocumentUploader: React.FC<DocumentUploaderProps> = ({ onUploadSuccess }) => {
+export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
+  onUploadSuccess,
+  isMaster = false,
+  defaultPublic = false,
+}) => {
   const [file, setFile] = useState<File | null>(null);
   const [category, setCategory] = useState<'manual_interno' | 'propiedad_horizontal' | 'arriendo' | 'contrato'>('manual_interno');
   const [customTitle, setCustomTitle] = useState('');
+  const [publishPublic, setPublishPublic] = useState(isMaster && defaultPublic);
   const [isUploading, setIsUploading] = useState(false);
+
+  useEffect(() => {
+    setPublishPublic(isMaster && defaultPublic);
+  }, [isMaster, defaultPublic]);
   const [isDragging, setIsDragging] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string; preview?: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -46,7 +57,7 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({ onUploadSucc
     setMessage(null);
 
     try {
-      const res = await apiService.uploadDocument(file, category, customTitle);
+      const res = await apiService.uploadDocument(file, category, customTitle, isMaster && publishPublic);
       setMessage({
         type: 'success',
         text: res.message || `Documento procesado e indexado (${res.chunks_created} fragmentos).`,
@@ -193,6 +204,26 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({ onUploadSucc
             />
           </div>
         </div>
+
+        {/* Opción exclusiva del Administrador Master: precargar a la base común global */}
+        {isMaster && (
+          <label className="flex items-start gap-2.5 p-3 rounded-xl bg-teal-50/80 border border-teal-200 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={publishPublic}
+              onChange={(e) => setPublishPublic(e.target.checked)}
+              className="mt-0.5 rounded border-teal-400 text-teal-700 focus:ring-teal-600"
+            />
+            <div className="text-[11px]">
+              <span className="font-bold text-teal-950 block">
+                Precargar en la base común global (Modo Master)
+              </span>
+              <span className="text-teal-800/90">
+                Si marcas esta opción, el documento quedará disponible para responder preguntas de todos los usuarios del proyecto.
+              </span>
+            </div>
+          </label>
+        )}
 
         {/* Mensaje de estado */}
         {message && (

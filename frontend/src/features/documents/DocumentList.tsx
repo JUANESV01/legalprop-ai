@@ -19,7 +19,9 @@ interface DocumentListProps {
   selectedDocIds: string[];
   onToggleSelectDoc: (docId: string) => void;
   onDeleteDoc: (docId: string) => Promise<void>;
+  onTogglePublicMaster?: (doc: DocumentSummary) => Promise<void>;
   isAuthenticated: boolean;
+  isMaster?: boolean;
 }
 
 export const DocumentList: React.FC<DocumentListProps> = ({
@@ -28,7 +30,9 @@ export const DocumentList: React.FC<DocumentListProps> = ({
   selectedDocIds,
   onToggleSelectDoc,
   onDeleteDoc,
+  onTogglePublicMaster,
   isAuthenticated,
+  isMaster = false,
 }) => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -179,26 +183,53 @@ export const DocumentList: React.FC<DocumentListProps> = ({
         </div>
 
         <div className="space-y-2.5">
-          {publicDocs.map((norma) => (
-            <div
-              key={norma.id}
-              className="p-3 bg-white border border-cream-200 rounded-xl space-y-1.5 shadow-soft"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center space-x-2 min-w-0">
-                  <BookOpen className="w-3.5 h-3.5 text-teal-700 shrink-0" />
-                  <span className="font-semibold text-xs text-slate-900 truncate">{norma.title}</span>
+          {publicDocs.map((norma) => {
+            const canMasterDelete = isMaster && !norma.id.startsWith('base_');
+            return (
+              <div
+                key={norma.id}
+                className="p-3 bg-white border border-cream-200 rounded-xl space-y-1.5 shadow-soft"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center space-x-2 min-w-0">
+                    <BookOpen className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                    <span className="font-semibold text-xs text-slate-900 truncate">{norma.title}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-md border text-teal-800 bg-teal-50 border-teal-200">
+                      {norma.chunks_count} frag.
+                    </span>
+                    {canMasterDelete && (
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(norma.id)}
+                        disabled={deletingId === norma.id}
+                        className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                        title="Eliminar de la base común (Master)"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-md border text-teal-800 bg-teal-50 border-teal-200 shrink-0">
-                  {norma.chunks_count} art/frag.
-                </span>
+                <div className="text-[10px] text-slate-500 flex items-center justify-between gap-1">
+                  <span className="flex items-center gap-1">
+                    <ShieldCheck className="w-3 h-3 text-teal-700 shrink-0" />
+                    <span>Base común global • {norma.category.replace('_', ' ')}</span>
+                  </span>
+                  {isMaster && !norma.id.startsWith('base_') && onTogglePublicMaster && (
+                    <button
+                      type="button"
+                      onClick={() => onTogglePublicMaster(norma)}
+                      className="text-teal-700 hover:underline font-medium"
+                    >
+                      Pasar a privado
+                    </button>
+                  )}
+                </div>
               </div>
-              <div className="text-[10px] text-slate-500 flex items-center gap-1">
-                <ShieldCheck className="w-3 h-3 text-teal-700 shrink-0" />
-                <span>Disponible para todas las consultas • Categoría: {norma.category.replace('_', ' ')}</span>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>

@@ -1,6 +1,7 @@
 from datetime import datetime
 from fastapi import APIRouter
 from app.core.config import settings
+from app.db.database import DB_ENGINE_NAME
 from app.services.rag_engine import rag_engine
 
 router = APIRouter()
@@ -16,6 +17,7 @@ def health_check():
         "service": settings.PROJECT_NAME,
         "version": settings.VERSION,
         "environment": settings.ENVIRONMENT,
+        "database_engine": DB_ENGINE_NAME,
         "gemini_api_configured": settings.is_gemini_configured,
         "gemini_model": settings.GEMINI_MODEL,
         "features": {

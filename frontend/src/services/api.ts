@@ -1,4 +1,6 @@
 import {
+  AdminOverview,
+  AdminUserItem,
   AuthResponse,
   BackendHealthResponse,
   ChatQueryRequest,
@@ -8,6 +10,7 @@ import {
   ConversationSummary,
   DisambiguationInfo,
   DocumentListResponse,
+  DocumentSummary,
   DocumentUploadResponse,
   IPCCalcRequest,
   IPCCalcResponse,
@@ -321,11 +324,17 @@ export const apiService = {
     return response.json();
   },
 
-  async uploadDocument(file: File, category: string, title?: string): Promise<DocumentUploadResponse> {
+  async uploadDocument(
+    file: File,
+    category: string,
+    title?: string,
+    isPublic: boolean = false
+  ): Promise<DocumentUploadResponse> {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('category', category);
     if (title) formData.append('title', title);
+    if (isPublic) formData.append('is_public', 'true');
 
     const response = await fetch(`${API_BASE_URL}/documents/upload`, {
       method: 'POST',
@@ -336,12 +345,66 @@ export const apiService = {
     return response.json();
   },
 
+  async updateDocumentMaster(
+    docId: string,
+    payload: { title?: string; category?: string; is_public?: boolean }
+  ): Promise<DocumentSummary> {
+    const response = await fetch(`${API_BASE_URL}/documents/${docId}`, {
+      method: 'PATCH',
+      headers: buildHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw await parseError(response, 'No se pudo actualizar el documento');
+    return response.json();
+  },
+
   async deleteDocument(docId: string): Promise<void> {
     const response = await fetch(`${API_BASE_URL}/documents/${docId}`, {
       method: 'DELETE',
       headers: buildHeaders(),
     });
     if (!response.ok) throw await parseError(response, 'Error eliminando documento');
+  },
+
+  // --- PANEL ADMINISTRADOR MASTER ---
+  async getAdminOverview(): Promise<AdminOverview> {
+    const response = await fetch(`${API_BASE_URL}/admin/overview`, { headers: buildHeaders() });
+    if (!response.ok) throw await parseError(response, 'Error cargando panel Master');
+    return response.json();
+  },
+
+  async getAdminUsers(): Promise<AdminUserItem[]> {
+    const response = await fetch(`${API_BASE_URL}/admin/users`, { headers: buildHeaders() });
+    if (!response.ok) throw await parseError(response, 'Error listando usuarios');
+    return response.json();
+  },
+
+  async updateAdminUser(
+    userId: string,
+    payload: { role?: UserRole; is_active?: boolean; unlock?: boolean }
+  ): Promise<AdminUserItem> {
+    const response = await fetch(`${API_BASE_URL}/admin/users/${userId}`, {
+      method: 'PATCH',
+      headers: buildHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw await parseError(response, 'Error actualizando usuario');
+    return response.json();
+  },
+
+  async getAdminAuditLogs(): Promise<SecurityLogItem[]> {
+    const response = await fetch(`${API_BASE_URL}/admin/audit-logs`, { headers: buildHeaders() });
+    if (!response.ok) throw await parseError(response, 'Error cargando auditoría');
+    return response.json();
+  },
+
+  async reindexAdminDocuments(): Promise<{ status: string; reindexed_documents: number; total_chunks: number; message: string }> {
+    const response = await fetch(`${API_BASE_URL}/admin/reindex`, {
+      method: 'POST',
+      headers: buildHeaders(),
+    });
+    if (!response.ok) throw await parseError(response, 'Error re-indexando documentos');
+    return response.json();
   },
 
   // --- CALCULADORA IPC & REPORTES PDF ---

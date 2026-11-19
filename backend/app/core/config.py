@@ -23,10 +23,15 @@ class Settings(BaseSettings):
     JWT_EXPIRATION_MINUTES: int = 60 * 24 * 7  # 7 días
     MAX_UPLOAD_SIZE_MB: int = 25
 
-    # Persistencia (SQLite por defecto, compatible con PostgreSQL vía DATABASE_URL)
+    # Persistencia (SQLite local o PostgreSQL en producción vía DATABASE_URL)
     DATABASE_URL: str = "sqlite:///./legalprop.db"
     CHROMA_PERSIST_DIR: str = "./storage/vector_store"
     CHROMA_COLLECTION_NAME: str = "normativas_legalprop"
+
+    # Cuenta Master (configurada únicamente por variables de entorno — nunca en código duro)
+    MASTER_ADMIN_EMAIL: str = ""
+    MASTER_ADMIN_PASSWORD: str = ""
+    MASTER_ADMIN_NAME: str = "Administrador Master"
 
     # CORS
     CORS_ORIGINS: Union[str, List[str]] = "http://localhost:5173,http://127.0.0.1:5173"

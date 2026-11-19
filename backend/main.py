@@ -1,5 +1,17 @@
+"""
+Punto de entrada principal del Backend FastAPI — LegalProp AI.
+
+Al iniciar ejecuta en orden:
+1. init_db(): crea tablas y aplica migraciones incrementales en PostgreSQL o SQLite.
+2. seed_master_user(): crea/sincroniza el Administrador Master desde variables de entorno seguras.
+3. preload_base_normativas(): sincroniza la Ley 820 de 2003 y la Ley 675 de 2001.
+4. rehydrate_documents_from_db(): restaura en ChromaDB todos los documentos persistidos en
+   PostgreSQL (base común del Master y archivos privados de usuarios) tras reinicios en Render.
+"""
+
 import glob
 import hashlib
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -9,8 +21,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from app.api.v1.router import api_router
 from app.core.config import settings
-from app.db.database import SessionLocal, init_db
-from app.models.db_models import DocumentRecord
+from app.core.security import (
+    generate_recovery_code,
+    hash_password,
+    hash_recovery_code,
+    hash_security_answer,
+)
+from app.db.database import DB_ENGINE_NAME, SessionLocal, init_db
+from app.models.db_models import DocumentRecord, User
 from app.services.rag_engine import rag_engine
 
 logging.basicConfig(
@@ -20,12 +38,74 @@ logging.basicConfig(
 logger = logging.getLogger("legalprop.main")
 
 
-def preload_base_normativas():
+def seed_master_user() -> None:
     """
-    Sincroniza e indexa automáticamente el corpus base colombiano (Ley 820 de 2003 y
-    Ley 675 de 2001) tanto en ChromaDB (con owner_scope='public') como en la base de
-    datos relacional para que aparezcan en el catálogo documental y se actualicen si cambian.
+    Crea o asegura la cuenta Master configurada en variables de entorno
+    (MASTER_ADMIN_EMAIL, MASTER_ADMIN_PASSWORD, MASTER_ADMIN_NAME).
+    Nunca guarda contraseñas en texto plano ni en el código fuente.
     """
+    email = (settings.MASTER_ADMIN_EMAIL or "").strip().lower()
+    password = (settings.MASTER_ADMIN_PASSWORD or "").strip()
+    full_name = (settings.MASTER_ADMIN_NAME or "Administrador Master").strip()
+
+    if not email or not password:
+        return
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if user is None:
+            default_questions = [
+                {
+                    "question": "¿Cuál es el nombre del proyecto?",
+                    "answer_hash": hash_security_answer("legalprop"),
+                },
+                {
+                    "question": "¿En qué universidad se desarrolla el proyecto?",
+                    "answer_hash": hash_security_answer("utp"),
+                },
+                {
+                    "question": "¿Cuál es la ley de propiedad horizontal en Colombia?",
+                    "answer_hash": hash_security_answer("675"),
+                },
+            ]
+            recovery_code = generate_recovery_code()
+            user = User(
+                email=email,
+                full_name=full_name,
+                password_hash=hash_password(password),
+                role="master",
+                security_question=default_questions[0]["question"],
+                security_answer_hash=default_questions[0]["answer_hash"],
+                security_questions_json=json.dumps(default_questions, ensure_ascii=False),
+                recovery_code_hash=hash_recovery_code(recovery_code),
+                is_active=True,
+            )
+            db.add(user)
+            db.commit()
+            logger.info(f"Cuenta Master inicializada correctamente para '{email}'.")
+        else:
+            changed = False
+            if user.role != "master":
+                user.role = "master"
+                changed = True
+            if full_name and user.full_name != full_name:
+                user.full_name = full_name
+                changed = True
+            if not user.is_active:
+                user.is_active = True
+                changed = True
+            if changed:
+                db.commit()
+                logger.info(f"Permisos Master verificados para '{email}'.")
+    except Exception as e:
+        logger.error(f"Error inicializando cuenta Master: {e}")
+    finally:
+        db.close()
+
+
+def preload_base_normativas() -> None:
+    """Sincroniza el corpus legal fundacional (Ley 820 de 2003 y Ley 675 de 2001)."""
     try:
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "docs", "normativas_base"))
         if not os.path.exists(base_dir):
@@ -58,12 +138,14 @@ def preload_base_normativas():
                 doc_id = f"base_{file_name[:10].replace('.', '_')}"
 
                 existing = db.query(DocumentRecord).filter(DocumentRecord.id == doc_id).first()
-                vector_stats = rag_engine.get_collection_stats()
+                existing_vectors = rag_engine.collection.get(where={"doc_id": doc_id})
+                has_vectors = bool(existing_vectors and existing_vectors.get("ids"))
 
                 needs_ingest = (
                     existing is None
                     or existing.content_hash != content_hash
-                    or vector_stats.get("total_chunks", 0) == 0
+                    or not existing.extracted_content
+                    or not has_vectors
                 )
 
                 if needs_ingest:
@@ -90,6 +172,7 @@ def preload_base_normativas():
                                 chunks_count=chunks,
                                 file_size_bytes=len(content.encode("utf-8")),
                                 content_preview=content[:600],
+                                extracted_content=content,
                                 content_hash=content_hash,
                                 is_public=True,
                             )
@@ -100,22 +183,79 @@ def preload_base_normativas():
                         existing.chunks_count = chunks
                         existing.file_size_bytes = len(content.encode("utf-8"))
                         existing.content_preview = content[:600]
+                        existing.extracted_content = content
                         existing.content_hash = content_hash
                     db.commit()
                     logger.info(f"Sincronizada norma base '{doc_title}': {chunks} fragmentos indexados.")
-                else:
-                    logger.info(f"Norma base '{doc_title}' ya actualizada ({existing.chunks_count} fragmentos).")
         finally:
             db.close()
     except Exception as e:
         logger.error(f"Error durante la precarga de normativas base: {e}", exc_info=True)
 
 
+def rehydrate_documents_from_db() -> None:
+    """
+    Re-hidrata automáticamente en ChromaDB cualquier documento persistido en PostgreSQL/SQLite
+    (base común subida por Master y archivos privados de usuarios) que falte tras un reinicio
+    en entornos con disco efímero como Render Free Tier.
+    """
+    db = SessionLocal()
+    try:
+        records = (
+            db.query(DocumentRecord)
+            .filter(DocumentRecord.extracted_content.isnot(None))
+            .all()
+        )
+        restored = 0
+        for doc in records:
+            if not doc.extracted_content:
+                continue
+            existing = rag_engine.collection.get(where={"doc_id": doc.id})
+            if existing and existing.get("ids"):
+                continue
+
+            owner_scope = (
+                "public"
+                if doc.is_public
+                else (
+                    f"user:{doc.owner_id}"
+                    if doc.owner_id
+                    else f"guest:{doc.guest_session_id or 'anonymous'}"
+                )
+            )
+            chunks = rag_engine.ingest_document(
+                doc_id=doc.id,
+                title=doc.title,
+                category=doc.category,
+                content=doc.extracted_content,
+                norma_numero=doc.norma_numero or doc.title,
+                owner_scope=owner_scope,
+                is_public=doc.is_public,
+                filename=doc.filename,
+            )
+            if chunks != doc.chunks_count:
+                doc.chunks_count = chunks
+            restored += 1
+
+        if restored:
+            db.commit()
+            logger.info(f"Re-hidratados {restored} documentos desde {DB_ENGINE_NAME} hacia ChromaDB.")
+    except Exception as e:
+        logger.error(f"Error re-hidratando documentos desde BD: {e}", exc_info=True)
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"Iniciando {settings.PROJECT_NAME} v{settings.VERSION} en entorno '{settings.ENVIRONMENT}'...")
+    logger.info(
+        f"Iniciando {settings.PROJECT_NAME} v{settings.VERSION} "
+        f"(entorno='{settings.ENVIRONMENT}', bd='{DB_ENGINE_NAME}')..."
+    )
     init_db()
+    seed_master_user()
     preload_base_normativas()
+    rehydrate_documents_from_db()
     yield
     logger.info("Cerrando LegalProp AI Backend...")
 
@@ -151,10 +291,11 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     return response
 
+
 # Inclusión de Rutas API V1
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
-# Servir Frontend SPA compilado (frontend/dist) automáticamente en despliegue unificado (ej. Render Web Service)
+# Servir Frontend SPA compilado (frontend/dist) automáticamente en despliegue unificado (Render)
 FRONTEND_DIST_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
 FRONTEND_ASSETS_DIR = os.path.join(FRONTEND_DIST_DIR, "assets")
 FRONTEND_INDEX_HTML = os.path.join(FRONTEND_DIST_DIR, "index.html")
@@ -170,6 +311,7 @@ def root():
     return {
         "service": settings.PROJECT_NAME,
         "version": settings.VERSION,
+        "database": DB_ENGINE_NAME,
         "status": "online",
         "docs": "/docs",
         "api_v1": settings.API_V1_STR,

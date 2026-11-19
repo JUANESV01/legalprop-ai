@@ -1,4 +1,4 @@
-export type UserRole = 'inquilino' | 'propietario' | 'administrador';
+export type UserRole = 'inquilino' | 'propietario' | 'administrador' | 'master';
 export type RecoveryMethod = 'questions' | 'recovery_code';
 
 export interface SecurityQuestionItem {
@@ -169,12 +169,40 @@ export interface IPCCalcResponse {
   requisitos_notificacion: string[];
 }
 
+export interface AdminOverview {
+  database_engine: string;
+  master_email: string;
+  users_count: number;
+  conversations_count: number;
+  messages_count: number;
+  public_documents_count: number;
+  private_documents_count: number;
+  vector_store: {
+    collection_name: string;
+    total_chunks: number;
+    status: string;
+  };
+}
+
+export interface AdminUserItem {
+  id: string;
+  full_name: string;
+  email: string;
+  role: UserRole;
+  is_active: boolean;
+  is_locked: boolean;
+  documents_count: number;
+  conversations_count: number;
+  created_at: string;
+}
+
 export interface BackendHealthResponse {
   status: string;
   timestamp: string;
   service: string;
   version: string;
   environment: string;
+  database_engine?: string;
   gemini_api_configured: boolean;
   gemini_model: string;
   vector_store: {

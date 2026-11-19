@@ -24,6 +24,12 @@ services:
       - key: JWT_SECRET_KEY
         generateValue: true
       - key: DATABASE_URL
-        value: sqlite:///./legalprop.db
+        sync: false
+      - key: MASTER_ADMIN_EMAIL
+        sync: false
+      - key: MASTER_ADMIN_PASSWORD
+        sync: false
+      - key: MASTER_ADMIN_NAME
+        sync: false
       - key: CHROMA_PERSIST_DIR
         value: ./storage/vector_store

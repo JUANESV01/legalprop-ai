@@ -10,6 +10,7 @@ import { LegalDisclaimer } from './components/LegalDisclaimer';
 import { AboutModal } from './components/AboutModal';
 import { AuthModal, AccountProfileModal, AuthTab } from './features/auth/AuthModal';
 import { IpcCalculatorModal } from './features/tools/IpcCalculatorModal';
+import { MasterPanelModal } from './features/admin/MasterPanelModal';
 import {
   ChatMessage,
   BackendHealthResponse,
@@ -36,11 +37,13 @@ export const App: React.FC = () => {
 
   // Modales
   const [isDocModalOpen, setIsDocModalOpen] = useState(false);
+  const [docModalDefaultPublic, setDocModalDefaultPublic] = useState(false);
   const [isAboutModalOpen, setIsAboutModalOpen] = useState(false);
   const [isIpcModalOpen, setIsIpcModalOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authModalTab, setAuthModalTab] = useState<AuthTab>('login');
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [isMasterPanelOpen, setIsMasterPanelOpen] = useState(false);
 
   // Estado de cuenta, historial y documentos
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -184,6 +187,12 @@ export const App: React.FC = () => {
     fetchHealth();
     fetchDocuments();
     refreshProfile();
+  };
+
+  const handleTogglePublicMaster = async (doc: DocumentSummary) => {
+    await apiService.updateDocumentMaster(doc.id, { is_public: !doc.is_public });
+    fetchHealth();
+    fetchDocuments();
   };
 
   const handleExportMessagePdf = async (question: string, message: ChatMessage) => {
@@ -351,8 +360,12 @@ export const App: React.FC = () => {
           }}
           onOpenProfile={() => setIsProfileModalOpen(true)}
           onOpenAbout={() => setIsAboutModalOpen(true)}
-          onOpenDocuments={() => setIsDocModalOpen(true)}
+          onOpenDocuments={() => {
+            setDocModalDefaultPublic(false);
+            setIsDocModalOpen(true);
+          }}
           onOpenIpc={() => setIsIpcModalOpen(true)}
+          onOpenMasterPanel={() => setIsMasterPanelOpen(true)}
         />
 
         <main className="flex-1 flex flex-col min-w-0 bg-cream-100 relative">
@@ -405,7 +418,11 @@ export const App: React.FC = () => {
                 </button>
               </div>
 
-              <DocumentUploader onUploadSuccess={handleUploadSuccess} />
+              <DocumentUploader
+                onUploadSuccess={handleUploadSuccess}
+                isMaster={user?.role === 'master'}
+                defaultPublic={docModalDefaultPublic}
+              />
 
               <DocumentList
                 health={health}
@@ -413,12 +430,27 @@ export const App: React.FC = () => {
                 selectedDocIds={selectedDocIds}
                 onToggleSelectDoc={handleToggleDocId}
                 onDeleteDoc={handleDeleteDocument}
+                onTogglePublicMaster={user?.role === 'master' ? handleTogglePublicMaster : undefined}
                 isAuthenticated={Boolean(user)}
+                isMaster={user?.role === 'master'}
               />
             </div>
           </div>
         </div>
       )}
+
+      <MasterPanelModal
+        isOpen={isMasterPanelOpen}
+        onClose={() => setIsMasterPanelOpen(false)}
+        onOpenGlobalUploader={() => {
+          setDocModalDefaultPublic(true);
+          setIsDocModalOpen(true);
+        }}
+        onRefreshDocuments={() => {
+          fetchHealth();
+          fetchDocuments();
+        }}
+      />
 
       <AuthModal
         isOpen={isAuthModalOpen}

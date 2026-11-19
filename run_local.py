@@ -2,7 +2,7 @@
 Punto de entrada opcional desde la raíz del repositorio para LegalProp AI.
 
 Permite arrancar el servidor unificado (API FastAPI + Frontend compilado) ejecutando:
-    .venv/bin/python app.py
+    .venv/bin/python run_local.py
 
 Para desarrollo con recarga automática en el backend:
     cd backend && ../.venv/bin/uvicorn main:app --reload --port 8000

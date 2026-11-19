@@ -130,7 +130,7 @@ legalprop-ai/
 ├── README.md                              # Documentación integral (este archivo)
 ├── render.yaml                            # Blueprint de despliegue 1-clic en Render
 ├── render_build.sh                        # Script de build unificado (Backend + Frontend)
-├── app.py                                 # Lanzador opcional desde la raíz
+├── run_local.py                           # Lanzador opcional desde la raíz
 ├── verify_legalprop.py                    # Auditoría automatizada QA / DevOps
 ├── docs/                                  # Documentación académica y corpus legal base
 │   ├── DDA_LegalProp_AI.md                # Documento de Diseño y Arquitectura

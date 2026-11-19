@@ -1,0 +1,14 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": ["backend", "run_local.py", "verify_legalprop.py"],
+  "exclude": ["**/__pycache__", ".venv", "frontend"],
+  "executionEnvironments": [
+    {
+      "root": "backend",
+      "extraPaths": ["backend"]
+    }
+  ],
+  "extraPaths": ["backend"],
+  "typeCheckingMode": "off"
+}

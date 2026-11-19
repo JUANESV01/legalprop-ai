@@ -6,6 +6,7 @@ y SQLite en desarrollo local. Incluye normalización de URLs postgres:// -> post
 pool resistente a desconexiones y migración incremental segura de columnas.
 """
 
+import importlib.util
 import logging
 from typing import Generator
 from sqlalchemy import create_engine, inspect, text
@@ -19,9 +20,17 @@ def _normalize_database_url(raw_url: str) -> str:
     url = (raw_url or "sqlite:///./legalprop.db").strip()
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
+
+    # Compatibilidad total con SQLAlchemy 2.0 y 2.1 (que cambia el driver default a psycopg v3)
+    if url.startswith("postgresql://"):
+        if importlib.util.find_spec("psycopg") is not None:
+            url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+        else:
+            url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+
     # Asegurar SSL para servidores PostgreSQL remotos (Render External / Neon / Supabase) si no se especificó
     if (
-        url.startswith("postgresql://")
+        url.startswith("postgresql")
         and "localhost" not in url
         and "127.0.0.1" not in url
         and ".internal" not in url

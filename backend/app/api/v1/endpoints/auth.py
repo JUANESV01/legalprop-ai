@@ -1,15 +1,31 @@
+"""
+Controlador REST de Autenticación, Recuperación Segura y Habeas Data (RF10 / RNF09).
+
+Características de seguridad implementadas:
+- Contraseñas de mínimo 8 caracteres cifradas con bcrypt.
+- Recuperación robusta sin costo externo: 3 preguntas de seguridad distintas (todas cifradas)
+  + código maestro de respaldo de un solo uso (LP-XXXX-XXXX) con rotación automática.
+- Protección contra fuerza bruta: bloqueo temporal de 15 minutos tras 5 intentos fallidos.
+- Bitácora de seguridad sanitizada (IP anonimizada con HMAC-SHA256, cero secretos en logs).
+"""
+
 import json
 import re
-from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from datetime import datetime, timedelta
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from app.core.security import (
+    anonymize_client_ip,
     create_access_token,
+    generate_recovery_code,
     get_current_user,
     hash_password,
+    hash_recovery_code,
     hash_security_answer,
     verify_password,
+    verify_recovery_code,
     verify_security_answer,
 )
 from app.db.database import get_db
@@ -23,6 +39,8 @@ from app.models.schemas.auth import (
     RecoveryQuestionResponse,
     RegisterRequest,
     ResetPasswordRequest,
+    ResetPasswordResponse,
+    SecurityLogItem,
     UserProfile,
 )
 from app.services.rag_engine import rag_engine
@@ -30,6 +48,8 @@ from app.services.rag_engine import rag_engine
 router = APIRouter()
 
 EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+MAX_FAILED_ATTEMPTS = 5
+LOCKOUT_MINUTES = 15
 
 
 def _normalize_email(email: str) -> str:
@@ -42,148 +62,303 @@ def _normalize_email(email: str) -> str:
     return clean
 
 
+def _parse_user_questions(user: User) -> List[dict]:
+    if user.security_questions_json:
+        try:
+            data = json.loads(user.security_questions_json)
+            if isinstance(data, list) and data:
+                return data
+        except Exception:
+            pass
+    if user.security_question and user.security_answer_hash:
+        return [{"question": user.security_question, "answer_hash": user.security_answer_hash}]
+    return []
+
+
 def _build_user_profile(user: User, db: Session) -> UserProfile:
     docs_count = db.query(DocumentRecord).filter(DocumentRecord.owner_id == user.id).count()
     convs_count = db.query(Conversation).filter(Conversation.user_id == user.id).count()
+    questions = _parse_user_questions(user)
     return UserProfile(
         id=user.id,
         email=user.email,
         full_name=user.full_name,
         role=user.role,
-        has_security_question=bool(user.security_question and user.security_answer_hash),
+        security_questions_count=len(questions),
+        has_recovery_code=bool(user.recovery_code_hash),
         created_at=user.created_at,
         documents_count=docs_count,
         conversations_count=convs_count,
     )
 
 
-def _log_audit(db: Session, user_id: str, action: str, details: str = "") -> None:
-    db.add(AuditLog(user_id=user_id, action=action, details=details))
+def _log_security_event(
+    db: Session,
+    action: str,
+    status_str: str = "SUCCESS",
+    user_id: Optional[str] = None,
+    request: Optional[Request] = None,
+    details: str = "",
+) -> None:
+    """Registra eventos de auditoría sanitizados (sin contraseñas ni PII cruda)."""
+    db.add(
+        AuditLog(
+            user_id=user_id,
+            action=action,
+            status=status_str,
+            ip_hash=anonymize_client_ip(request),
+            details=details[:220],
+        )
+    )
     db.commit()
+
+
+def _check_not_locked(user: User, db: Session, request: Request, action_name: str) -> None:
+    now = datetime.utcnow()
+    if user.locked_until and user.locked_until > now:
+        remaining = max(1, int((user.locked_until - now).total_seconds() // 60) + 1)
+        _log_security_event(
+            db, action_name, "BLOCKED", user.id, request, f"Cuenta bloqueada ({remaining} min restantes)"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Por seguridad, el acceso está bloqueado temporalmente tras varios intentos fallidos. Intenta de nuevo en {remaining} minuto(s).",
+        )
+
+
+def _register_failed_attempt(user: User, db: Session, request: Request, action_name: str) -> None:
+    user.failed_attempts = (user.failed_attempts or 0) + 1
+    if user.failed_attempts >= MAX_FAILED_ATTEMPTS:
+        user.locked_until = datetime.utcnow() + timedelta(minutes=LOCKOUT_MINUTES)
+        user.failed_attempts = 0
+        db.commit()
+        _log_security_event(
+            db, action_name, "BLOCKED", user.id, request, f"Bloqueo automático {LOCKOUT_MINUTES} min"
+        )
+    else:
+        db.commit()
+        _log_security_event(
+            db, action_name, "FAILED", user.id, request, f"Intento fallido ({user.failed_attempts}/{MAX_FAILED_ATTEMPTS})"
+        )
+
+
+def _reset_failed_attempts(user: User, db: Session) -> None:
+    if user.failed_attempts or user.locked_until:
+        user.failed_attempts = 0
+        user.locked_until = None
+        db.commit()
 
 
 @router.post(
     "/register",
     response_model=AuthResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Registrar nueva cuenta de usuario (RF10 / RNF09)",
+    summary="Registrar usuario con 3 preguntas de seguridad y código maestro de respaldo",
 )
-def register_user(payload: RegisterRequest, db: Session = Depends(get_db)):
+def register_user(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)):
     email = _normalize_email(payload.email)
-    existing = db.query(User).filter(User.email == email).first()
-    if existing:
+    if db.query(User).filter(User.email == email).first():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Ya existe una cuenta registrada con este correo electrónico.",
         )
+
+    # Validar que las 3 preguntas sean distintas entre sí
+    cleaned_questions = [q.question.strip() for q in payload.security_questions]
+    if len({q.lower() for q in cleaned_questions}) < 3:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Debes elegir 3 preguntas de seguridad diferentes entre sí.",
+        )
+
+    hashed_questions = [
+        {
+            "question": item.question.strip(),
+            "answer_hash": hash_security_answer(item.answer),
+        }
+        for item in payload.security_questions
+    ]
+
+    plain_recovery_code = generate_recovery_code()
 
     user = User(
         email=email,
         full_name=payload.full_name.strip(),
         password_hash=hash_password(payload.password),
         role=payload.role,
-        security_question=payload.security_question.strip(),
-        security_answer_hash=hash_security_answer(payload.security_answer),
+        security_question=hashed_questions[0]["question"],
+        security_answer_hash=hashed_questions[0]["answer_hash"],
+        security_questions_json=json.dumps(hashed_questions, ensure_ascii=False),
+        recovery_code_hash=hash_recovery_code(plain_recovery_code),
     )
     db.add(user)
     db.commit()
     db.refresh(user)
 
-    _log_audit(db, user.id, "USER_REGISTER", f"Rol: {user.role}")
+    _log_security_event(db, "USER_REGISTER", "SUCCESS", user.id, request, f"Cuenta creada (rol: {user.role})")
 
-    token = create_access_token(
-        subject=user.id,
-        extra_claims={"email": user.email, "role": user.role},
+    token = create_access_token(subject=user.id, extra_claims={"email": user.email, "role": user.role})
+    return AuthResponse(
+        access_token=token,
+        user=_build_user_profile(user, db),
+        recovery_code=plain_recovery_code,
     )
-    return AuthResponse(access_token=token, user=_build_user_profile(user, db))
 
 
 @router.post(
     "/login",
     response_model=AuthResponse,
-    summary="Iniciar sesión con correo y contraseña (JWT)",
+    summary="Iniciar sesión con protección anti-fuerza bruta y JWT",
 )
-def login_user(payload: LoginRequest, db: Session = Depends(get_db)):
+def login_user(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     email = _normalize_email(payload.email)
     user = db.query(User).filter(User.email == email, User.is_active == True).first()  # noqa: E712
 
-    if not user or not verify_password(payload.password, user.password_hash):
+    if not user:
+        _log_security_event(db, "USER_LOGIN", "FAILED", None, request, "Correo no registrado")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Correo electrónico o contraseña incorrectos.",
         )
 
-    _log_audit(db, user.id, "USER_LOGIN", "Inicio de sesión exitoso")
+    _check_not_locked(user, db, request, "USER_LOGIN")
 
-    token = create_access_token(
-        subject=user.id,
-        extra_claims={"email": user.email, "role": user.role},
-    )
+    if not verify_password(payload.password, user.password_hash):
+        _register_failed_attempt(user, db, request, "USER_LOGIN")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Correo electrónico o contraseña incorrectos.",
+        )
+
+    _reset_failed_attempts(user, db)
+    _log_security_event(db, "USER_LOGIN", "SUCCESS", user.id, request, "Sesión iniciada correctamente")
+
+    token = create_access_token(subject=user.id, extra_claims={"email": user.email, "role": user.role})
     return AuthResponse(access_token=token, user=_build_user_profile(user, db))
 
 
+@router.get("/me", response_model=UserProfile, summary="Perfil del usuario autenticado")
+def get_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _build_user_profile(current_user, db)
+
+
 @router.get(
-    "/me",
-    response_model=UserProfile,
-    summary="Obtener perfil del usuario autenticado",
+    "/security-logs",
+    response_model=List[SecurityLogItem],
+    summary="Consultar bitácora de actividad y seguridad de mi cuenta (RF05 / RNF09)",
 )
-def get_me(
+def get_my_security_logs(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return _build_user_profile(current_user, db)
+    logs = (
+        db.query(AuditLog)
+        .filter(AuditLog.user_id == current_user.id)
+        .order_by(AuditLog.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    return [
+        SecurityLogItem(
+            id=lg.id,
+            action=lg.action,
+            status=lg.status or "SUCCESS",
+            ip_hash=lg.ip_hash,
+            details=lg.details,
+            created_at=lg.created_at,
+        )
+        for lg in logs
+    ]
 
 
 @router.post(
     "/recovery-question",
     response_model=RecoveryQuestionResponse,
-    summary="Paso 1 de recuperación gratuita: obtener pregunta de seguridad",
+    summary="Paso 1 de recuperación: obtener las 3 preguntas de seguridad configuradas",
 )
-def get_recovery_question(payload: RecoveryQuestionRequest, db: Session = Depends(get_db)):
-    email = _normalize_email(payload.email)
-    user = db.query(User).filter(User.email == email, User.is_active == True).first()  # noqa: E712
-    if not user or not user.security_question:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No encontramos una cuenta con recuperación configurada para ese correo.",
-        )
-
-    return RecoveryQuestionResponse(
-        email=user.email,
-        security_question=user.security_question,
-        message="Responde tu pregunta de seguridad para definir una nueva contraseña.",
-    )
-
-
-@router.post(
-    "/reset-password",
-    response_model=GenericMessageResponse,
-    summary="Paso 2 de recuperación: validar respuesta de seguridad y actualizar contraseña",
-)
-def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+def get_recovery_questions(payload: RecoveryQuestionRequest, request: Request, db: Session = Depends(get_db)):
     email = _normalize_email(payload.email)
     user = db.query(User).filter(User.email == email, User.is_active == True).first()  # noqa: E712
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Cuenta no encontrada.",
+            detail="No encontramos una cuenta activa asociada a ese correo.",
         )
 
-    if not verify_security_answer(payload.security_answer, user.security_answer_hash):
+    _check_not_locked(user, db, request, "PASSWORD_RECOVERY")
+    questions = _parse_user_questions(user)
+    if not questions and not user.recovery_code_hash:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="La respuesta de seguridad no coincide. Verifica e intenta de nuevo.",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Esta cuenta no tiene métodos de recuperación configurados.",
         )
+
+    return RecoveryQuestionResponse(
+        email=user.email,
+        security_questions=[q["question"] for q in questions],
+        supports_recovery_code=bool(user.recovery_code_hash),
+        message="Responde correctamente tus preguntas de seguridad o utiliza tu código maestro de respaldo.",
+    )
+
+
+@router.post(
+    "/reset-password",
+    response_model=ResetPasswordResponse,
+    summary="Paso 2 de recuperación: validar 3 respuestas de seguridad o código de respaldo",
+)
+def reset_password(payload: ResetPasswordRequest, request: Request, db: Session = Depends(get_db)):
+    email = _normalize_email(payload.email)
+    user = db.query(User).filter(User.email == email, User.is_active == True).first()  # noqa: E712
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cuenta no encontrada.")
+
+    _check_not_locked(user, db, request, "PASSWORD_RESET")
+
+    new_rotated_code: Optional[str] = None
+
+    if payload.method == "recovery_code":
+        if not payload.recovery_code or not verify_recovery_code(payload.recovery_code, user.recovery_code_hash):
+            _register_failed_attempt(user, db, request, "PASSWORD_RESET")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="El código de recuperación no es válido.",
+            )
+        # Rotar el código de un solo uso automáticamente
+        new_rotated_code = generate_recovery_code()
+        user.recovery_code_hash = hash_recovery_code(new_rotated_code)
+        detail_msg = "Restablecimiento validado con código de respaldo (código rotado)"
+    else:
+        stored_questions = _parse_user_questions(user)
+        provided = payload.security_answers or []
+        if len(provided) != len(stored_questions) or len(stored_questions) == 0:
+            _register_failed_attempt(user, db, request, "PASSWORD_RESET")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Debes responder todas las preguntas de seguridad ({len(stored_questions)}).",
+            )
+        all_match = all(
+            verify_security_answer(ans, q_item["answer_hash"])
+            for ans, q_item in zip(provided, stored_questions)
+        )
+        if not all_match:
+            _register_failed_attempt(user, db, request, "PASSWORD_RESET")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Una o más respuestas de seguridad no coinciden. Verifica e intenta de nuevo.",
+            )
+        detail_msg = f"Restablecimiento validado con {len(stored_questions)} preguntas de seguridad"
 
     user.password_hash = hash_password(payload.new_password)
     user.updated_at = datetime.utcnow()
+    _reset_failed_attempts(user, db)
     db.commit()
 
-    _log_audit(db, user.id, "PASSWORD_RESET", "Restablecimiento por pregunta de seguridad")
+    _log_security_event(db, "PASSWORD_RESET", "SUCCESS", user.id, request, detail_msg)
 
-    return GenericMessageResponse(
+    return ResetPasswordResponse(
         status="success",
-        message="Tu contraseña ha sido restablecida con éxito. Ya puedes iniciar sesión.",
+        message="Tu contraseña ha sido actualizada con éxito. Ya puedes iniciar sesión.",
+        new_recovery_code=new_rotated_code,
     )
 
 
@@ -194,10 +369,12 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
 )
 def change_password(
     payload: ChangePasswordRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if not verify_password(payload.current_password, current_user.password_hash):
+        _log_security_event(db, "PASSWORD_CHANGE", "FAILED", current_user.id, request, "Contraseña actual incorrecta")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="La contraseña actual es incorrecta.",
@@ -205,15 +382,37 @@ def change_password(
     current_user.password_hash = hash_password(payload.new_password)
     current_user.updated_at = datetime.utcnow()
     db.commit()
-    _log_audit(db, current_user.id, "PASSWORD_CHANGE", "Cambio de contraseña desde perfil")
+    _log_security_event(db, "PASSWORD_CHANGE", "SUCCESS", current_user.id, request, "Contraseña actualizada desde perfil")
     return GenericMessageResponse(status="success", message="Contraseña actualizada correctamente.")
+
+
+@router.post(
+    "/rotate-recovery-code",
+    summary="Generar un nuevo código maestro de recuperación (invalida el anterior)",
+)
+def rotate_recovery_code(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    new_code = generate_recovery_code()
+    current_user.recovery_code_hash = hash_recovery_code(new_code)
+    current_user.updated_at = datetime.utcnow()
+    db.commit()
+    _log_security_event(db, "RECOVERY_CODE_ROTATED", "SUCCESS", current_user.id, request, "Código de respaldo regenerado")
+    return {
+        "status": "success",
+        "recovery_code": new_code,
+        "message": "Guarda este código en un lugar seguro. No volverá a mostrarse.",
+    }
 
 
 @router.get(
     "/export-data",
-    summary="Exportar todos los datos personales del usuario (Habeas Data — Ley 1581 de 2012 / RNF09)",
+    summary="Exportar todos los datos personales (Habeas Data — Ley 1581 de 2012 / RNF09)",
 )
 def export_my_data(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -264,7 +463,7 @@ def export_my_data(
         ],
     }
 
-    _log_audit(db, current_user.id, "HABEAS_DATA_EXPORT", "Exportación de datos personales")
+    _log_security_event(db, "HABEAS_DATA_EXPORT", "SUCCESS", current_user.id, request, "Exportación JSON")
     return JSONResponse(
         content=export_payload,
         headers={
@@ -276,18 +475,15 @@ def export_my_data(
 @router.delete(
     "/me",
     response_model=GenericMessageResponse,
-    summary="Eliminar cuenta y borrado definitivo de datos y documentos (Habeas Data — Ley 1581 / RNF09)",
+    summary="Borrado definitivo de cuenta, historial y documentos (Ley 1581 / RNF09)",
 )
 def delete_my_account(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     owner_scope = f"user:{current_user.id}"
-    # 1. Borrar todos los vectores privados en ChromaDB
     rag_engine.delete_owner_documents(owner_scope)
-    # 2. Borrar registros de auditoría asociados
     db.query(AuditLog).filter(AuditLog.user_id == current_user.id).delete()
-    # 3. Borrar usuario (cascade elimina conversaciones, mensajes y documentos relacionales)
     db.delete(current_user)
     db.commit()
 

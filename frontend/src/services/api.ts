@@ -11,6 +11,9 @@ import {
   DocumentUploadResponse,
   IPCCalcRequest,
   IPCCalcResponse,
+  RecoveryMethod,
+  SecurityLogItem,
+  SecurityQuestionItem,
   UserProfile,
   UserRole,
 } from '../types';
@@ -27,11 +30,8 @@ export function getStoredToken(): string | null {
 }
 
 export function setStoredToken(token: string | null): void {
-  if (token) {
-    localStorage.setItem(TOKEN_KEY, token);
-  } else {
-    localStorage.removeItem(TOKEN_KEY);
-  }
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  else localStorage.removeItem(TOKEN_KEY);
 }
 
 export function getOrCreateGuestSessionId(): string {
@@ -49,9 +49,7 @@ function buildHeaders(extra?: Record<string, string>): Record<string, string> {
     ...(extra || {}),
   };
   const token = getStoredToken();
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
+  if (token) headers['Authorization'] = `Bearer ${token}`;
   return headers;
 }
 
@@ -86,20 +84,17 @@ export interface StreamChatCallbacks {
 export const apiService = {
   async checkHealth(): Promise<BackendHealthResponse> {
     const response = await fetch(`${API_BASE_URL}/health`);
-    if (!response.ok) {
-      throw await parseError(response, 'Error en health check');
-    }
+    if (!response.ok) throw await parseError(response, 'Error en health check');
     return response.json();
   },
 
-  // --- AUTENTICACIÓN, REGISTRO, RECUPERACIÓN Y HABEAS DATA ---
+  // --- AUTENTICACIÓN, SEGURIDAD Y HABEAS DATA ---
   async register(payload: {
     full_name: string;
     email: string;
     password: string;
     role: UserRole;
-    security_question: string;
-    security_answer: string;
+    security_questions: SecurityQuestionItem[];
   }): Promise<AuthResponse> {
     const response = await fetch(`${API_BASE_URL}/auth/register`, {
       method: 'POST',
@@ -125,14 +120,20 @@ export const apiService = {
   },
 
   async getMe(): Promise<UserProfile> {
-    const response = await fetch(`${API_BASE_URL}/auth/me`, {
-      headers: buildHeaders(),
-    });
+    const response = await fetch(`${API_BASE_URL}/auth/me`, { headers: buildHeaders() });
     if (!response.ok) throw await parseError(response, 'Sesión expirada');
     return response.json();
   },
 
-  async getRecoveryQuestion(email: string): Promise<{ email: string; security_question: string; message: string }> {
+  async getSecurityLogs(): Promise<SecurityLogItem[]> {
+    const response = await fetch(`${API_BASE_URL}/auth/security-logs`, { headers: buildHeaders() });
+    if (!response.ok) throw await parseError(response, 'No se pudieron consultar los registros');
+    return response.json();
+  },
+
+  async getRecoveryQuestions(
+    email: string
+  ): Promise<{ email: string; security_questions: string[]; supports_recovery_code: boolean; message: string }> {
     const response = await fetch(`${API_BASE_URL}/auth/recovery-question`, {
       method: 'POST',
       headers: buildHeaders({ 'Content-Type': 'application/json' }),
@@ -144,9 +145,11 @@ export const apiService = {
 
   async resetPassword(payload: {
     email: string;
-    security_answer: string;
+    method: RecoveryMethod;
+    security_answers?: string[];
+    recovery_code?: string;
     new_password: string;
-  }): Promise<{ status: string; message: string }> {
+  }): Promise<{ status: string; message: string; new_recovery_code?: string | null }> {
     const response = await fetch(`${API_BASE_URL}/auth/reset-password`, {
       method: 'POST',
       headers: buildHeaders({ 'Content-Type': 'application/json' }),
@@ -166,10 +169,17 @@ export const apiService = {
     return response.json();
   },
 
-  async exportMyData(): Promise<void> {
-    const response = await fetch(`${API_BASE_URL}/auth/export-data`, {
+  async rotateRecoveryCode(): Promise<{ status: string; recovery_code: string; message: string }> {
+    const response = await fetch(`${API_BASE_URL}/auth/rotate-recovery-code`, {
+      method: 'POST',
       headers: buildHeaders(),
     });
+    if (!response.ok) throw await parseError(response, 'Error regenerando código de respaldo');
+    return response.json();
+  },
+
+  async exportMyData(): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/auth/export-data`, { headers: buildHeaders() });
     if (!response.ok) throw await parseError(response, 'Error al exportar datos');
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);
@@ -195,7 +205,7 @@ export const apiService = {
     setStoredToken(null);
   },
 
-  // --- CHAT & STREAMING SSE (RF04 / HU05) ---
+  // --- CHAT & STREAMING SSE ---
   async queryChat(request: ChatQueryRequest): Promise<ChatQueryResponse> {
     const response = await fetch(`${API_BASE_URL}/chat/query`, {
       method: 'POST',
@@ -212,9 +222,8 @@ export const apiService = {
       headers: buildHeaders({ 'Content-Type': 'application/json', Accept: 'text/event-stream' }),
       body: JSON.stringify(request),
     });
-
     if (!response.ok || !response.body) {
-      throw await parseError(response, 'Error al conectar el flujo de respuesta en tiempo real');
+      throw await parseError(response, 'Error al conectar la respuesta en tiempo real');
     }
 
     const reader = response.body.getReader();
@@ -228,17 +237,13 @@ export const apiService = {
 
       for (const rawLine of lines) {
         const line = rawLine.replace(/\r$/, '');
-        if (line.startsWith('event:')) {
-          eventName = line.slice(6).trim();
-        } else if (line.startsWith('data:')) {
-          dataLines.push(line.slice(5).trim());
-        }
+        if (line.startsWith('event:')) eventName = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
       }
 
       if (dataLines.length === 0) return;
-      const dataStr = dataLines.join('\n');
       try {
-        const parsed = JSON.parse(dataStr);
+        const parsed = JSON.parse(dataLines.join('\n'));
         if (eventName === 'metadata') callbacks.onMetadata?.(parsed);
         else if (eventName === 'token') callbacks.onToken?.(parsed.text || '');
         else if (eventName === 'web_sources') callbacks.onWebSources?.(parsed.citations || []);
@@ -259,17 +264,12 @@ export const apiService = {
         if (part.trim()) processEventBlock(part);
       }
     }
-
-    if (buffer.trim()) {
-      processEventBlock(buffer);
-    }
+    if (buffer.trim()) processEventBlock(buffer);
   },
 
-  // --- CONVERSACIONES CRUD (HU08 / RF07) ---
+  // --- CONVERSACIONES CRUD ---
   async listConversations(): Promise<ConversationSummary[]> {
-    const response = await fetch(`${API_BASE_URL}/conversations`, {
-      headers: buildHeaders(),
-    });
+    const response = await fetch(`${API_BASE_URL}/conversations`, { headers: buildHeaders() });
     if (!response.ok) throw await parseError(response, 'Error cargando historial');
     return response.json();
   },
@@ -314,11 +314,9 @@ export const apiService = {
     URL.revokeObjectURL(url);
   },
 
-  // --- DOCUMENTOS MULTIFORMATO (HU03 / RF03 / RNF04) ---
+  // --- DOCUMENTOS ---
   async listDocuments(): Promise<DocumentListResponse> {
-    const response = await fetch(`${API_BASE_URL}/documents`, {
-      headers: buildHeaders(),
-    });
+    const response = await fetch(`${API_BASE_URL}/documents`, { headers: buildHeaders() });
     if (!response.ok) throw await parseError(response, 'Error listando documentos');
     return response.json();
   },
@@ -346,7 +344,7 @@ export const apiService = {
     if (!response.ok) throw await parseError(response, 'Error eliminando documento');
   },
 
-  // --- CALCULADORA IPC & REPORTES PDF (HU01 / HU06 / RF01 / RF06) ---
+  // --- CALCULADORA IPC & REPORTES PDF ---
   async calculateIpc(payload: IPCCalcRequest): Promise<IPCCalcResponse> {
     const response = await fetch(`${API_BASE_URL}/tools/ipc/calculate`, {
       method: 'POST',

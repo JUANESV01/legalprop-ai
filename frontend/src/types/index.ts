@@ -1,11 +1,18 @@
 export type UserRole = 'inquilino' | 'propietario' | 'administrador';
+export type RecoveryMethod = 'questions' | 'recovery_code';
+
+export interface SecurityQuestionItem {
+  question: string;
+  answer: string;
+}
 
 export interface UserProfile {
   id: string;
   email: string;
   full_name: string;
   role: UserRole;
-  has_security_question: boolean;
+  security_questions_count: number;
+  has_recovery_code: boolean;
   created_at: string;
   documents_count: number;
   conversations_count: number;
@@ -15,6 +22,16 @@ export interface AuthResponse {
   access_token: string;
   token_type: string;
   user: UserProfile;
+  recovery_code?: string | null;
+}
+
+export interface SecurityLogItem {
+  id: string;
+  action: string;
+  status: string;
+  ip_hash?: string | null;
+  details?: string | null;
+  created_at: string;
 }
 
 export interface Citation {

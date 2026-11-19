@@ -1,3 +1,4 @@
+// LegalProp AI — Componente raíz de la Vista (Patrón MVC)
 import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
@@ -28,16 +29,20 @@ export const App: React.FC = () => {
   >(null);
   const [health, setHealth] = useState<BackendHealthResponse | null>(null);
 
-  // Modals & UI drawers
+  // Panel lateral desplegable (abierto por defecto en escritorio, oculto en móvil)
+  const [sidebarOpen, setSidebarOpen] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
+  );
+
+  // Modales
   const [isDocModalOpen, setIsDocModalOpen] = useState(false);
   const [isAboutModalOpen, setIsAboutModalOpen] = useState(false);
   const [isIpcModalOpen, setIsIpcModalOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authModalTab, setAuthModalTab] = useState<AuthTab>('login');
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Auth, History & Documents state
+  // Estado de cuenta, historial y documentos
   const [user, setUser] = useState<UserProfile | null>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [conversationId, setConversationId] = useState<string | undefined>(undefined);
@@ -47,10 +52,9 @@ export const App: React.FC = () => {
 
   const fetchHealth = useCallback(async () => {
     try {
-      const data = await apiService.checkHealth();
-      setHealth(data);
-    } catch (err) {
-      console.warn('Backend no accesible aún:', err);
+      setHealth(await apiService.checkHealth());
+    } catch {
+      /* backend aún iniciando */
     }
   }, []);
 
@@ -58,17 +62,16 @@ export const App: React.FC = () => {
     try {
       const data = await apiService.listDocuments();
       setDocuments(data.documents || []);
-    } catch (err) {
-      console.warn('No se pudieron listar documentos:', err);
+    } catch {
+      /* silencioso */
     }
   }, []);
 
   const fetchConversations = useCallback(async () => {
     try {
-      const list = await apiService.listConversations();
-      setConversations(list || []);
-    } catch (err) {
-      console.warn('No se pudo cargar historial:', err);
+      setConversations((await apiService.listConversations()) || []);
+    } catch {
+      /* silencioso */
     }
   }, []);
 
@@ -78,8 +81,7 @@ export const App: React.FC = () => {
       return;
     }
     try {
-      const me = await apiService.getMe();
-      setUser(me);
+      setUser(await apiService.getMe());
     } catch {
       apiService.logout();
       setUser(null);
@@ -91,7 +93,7 @@ export const App: React.FC = () => {
     refreshProfile();
     fetchDocuments();
     fetchConversations();
-    const interval = setInterval(fetchHealth, 20000);
+    const interval = setInterval(fetchHealth, 25000);
     return () => clearInterval(interval);
   }, [fetchHealth, refreshProfile, fetchDocuments, fetchConversations]);
 
@@ -272,11 +274,7 @@ export const App: React.FC = () => {
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantTempId
-                  ? {
-                      ...m,
-                      id: info.message_id || m.id,
-                      isStreaming: false,
-                    }
+                  ? { ...m, id: info.message_id || m.id, isStreaming: false }
                   : m
               )
             );
@@ -287,7 +285,7 @@ export const App: React.FC = () => {
                 m.id === assistantTempId
                   ? {
                       ...m,
-                      content: m.content || `Error al procesar la consulta: ${detail}`,
+                      content: m.content || `No se pudo procesar la consulta: ${detail}`,
                       isStreaming: false,
                     }
                   : m
@@ -304,9 +302,7 @@ export const App: React.FC = () => {
           m.id === assistantTempId
             ? {
                 ...m,
-                content: `Error al procesar la consulta: ${
-                  err.message || 'Verifica que el servidor backend esté activo en localhost:8000'
-                }`,
+                content: `No se pudo conectar con el servicio: ${err.message || 'verifica el servidor'}`,
                 isStreaming: false,
               }
             : m
@@ -317,39 +313,30 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleSelectPrompt = (prompt: string, category?: 'arriendo' | 'propiedad_horizontal') => {
-    if (category) setSelectedCategory(category);
-    handleSendMessage(prompt, true);
-  };
-
   const userDocuments = documents.filter((d) => !d.is_public);
 
   return (
     <div className="flex flex-col h-screen bg-cream-100 text-slate-800 font-sans selection:bg-teal-100 selection:text-teal-900 overflow-hidden">
-      {/* Encabezado Principal con Logo, IPC, Documentos y Login/Registro/Perfil */}
       <Header
         health={health}
-        user={user}
+        sidebarOpen={sidebarOpen}
         userDocsCount={userDocuments.length}
+        conversationTitle={conversationTitle}
+        onToggleSidebar={() => setSidebarOpen((v) => !v)}
         onOpenDocuments={() => setIsDocModalOpen(true)}
-        onOpenAbout={() => setIsAboutModalOpen(true)}
         onOpenIpc={() => setIsIpcModalOpen(true)}
-        onOpenAuth={(tab) => {
-          setAuthModalTab(tab);
-          setIsAuthModalOpen(true);
-        }}
-        onOpenProfile={() => setIsProfileModalOpen(true)}
-        onToggleMobileMenu={() => setMobileMenuOpen((v) => !v)}
       />
 
       <div className="flex flex-1 overflow-hidden relative">
-        {/* Barra Lateral con Historial CRUD, Filtros, IPC y Sugerencias */}
         <Sidebar
+          isOpen={sidebarOpen}
+          onCloseMobile={() => {
+            if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+              setSidebarOpen(false);
+            }
+          }}
           selectedCategory={selectedCategory}
           onSelectCategory={setSelectedCategory}
-          onSelectPrompt={handleSelectPrompt}
-          onOpenAbout={() => setIsAboutModalOpen(true)}
-          onOpenIpc={() => setIsIpcModalOpen(true)}
           conversations={conversations}
           activeConversationId={conversationId}
           onNewConversation={handleNewConversation}
@@ -357,25 +344,28 @@ export const App: React.FC = () => {
           onRenameConversation={handleRenameConversation}
           onDeleteConversation={handleDeleteConversation}
           onExportConversationPdf={(id) => apiService.downloadConversationPdf(id)}
-          mobileOpen={mobileMenuOpen}
-          onCloseMobile={() => setMobileMenuOpen(false)}
+          user={user}
+          onOpenAuth={(tab) => {
+            setAuthModalTab(tab);
+            setIsAuthModalOpen(true);
+          }}
+          onOpenProfile={() => setIsProfileModalOpen(true)}
+          onOpenAbout={() => setIsAboutModalOpen(true)}
+          onOpenDocuments={() => setIsDocModalOpen(true)}
+          onOpenIpc={() => setIsIpcModalOpen(true)}
         />
 
-        {/* Área Central de Conversación */}
         <main className="flex-1 flex flex-col min-w-0 bg-cream-100 relative">
           <ChatContainer
             messages={messages}
-            isLoading={isLoading}
+            userName={user?.full_name}
             onSelectPrompt={(p) => handleSendMessage(p, true)}
-            onOpenIpcCalculator={() => setIsIpcModalOpen(true)}
-            onOpenDocuments={() => setIsDocModalOpen(true)}
             onExportPdf={handleExportMessagePdf}
           />
 
           <ChatInput
             onSendMessage={handleSendMessage}
             isLoading={isLoading}
-            selectedCategory={selectedCategory}
             onOpenUpload={() => setIsDocModalOpen(true)}
             userDocuments={userDocuments}
             selectedDocIds={selectedDocIds}
@@ -384,45 +374,39 @@ export const App: React.FC = () => {
         </main>
       </div>
 
-      {/* Franja de Advertencia y Alcance Legal */}
       <LegalDisclaimer />
 
-      {/* Panel Lateral de Gestión de Documentos */}
+      {/* Panel lateral de Documentos */}
       {isDocModalOpen && (
         <div
-          className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex justify-end animate-fadeIn"
+          className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex justify-end animate-fadeIn"
           role="dialog"
           aria-modal="true"
         >
-          <div className="w-full max-w-xl bg-cream-50 border-l border-cream-200 h-full p-5 sm:p-6 overflow-y-auto space-y-5 flex flex-col justify-between shadow-2xl text-slate-800">
+          <div className="w-full max-w-xl bg-cream-50 border-l border-cream-200 h-full p-5 sm:p-6 overflow-y-auto space-y-5 flex flex-col justify-between shadow-2xl">
             <div className="space-y-5">
               <div className="flex items-center justify-between pb-4 border-b border-cream-200">
                 <div className="flex items-center space-x-2.5">
-                  <div className="w-9 h-9 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-700">
-                    <Layers className="w-5 h-5" />
+                  <div className="w-8 h-8 rounded-lg bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-700">
+                    <Layers className="w-4 h-4" />
                   </div>
                   <div>
-                    <h2 className="text-lg font-bold text-slate-900">Documentos y Reglamentos</h2>
-                    <p className="text-xs text-slate-500">
-                      Sube archivos PDF, DOCX, TXT o Excel para que LegalProp responda con base en ellos
-                    </p>
+                    <h2 className="text-base font-bold text-slate-900">Documentos y Reglamentos</h2>
+                    <p className="text-xs text-slate-500">PDF, Word, TXT, Excel, ODT o imágenes</p>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => setIsDocModalOpen(false)}
-                  className="p-2 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-cream-100 transition-colors"
-                  title="Cerrar panel"
-                  aria-label="Cerrar panel de documentos"
+                  className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-cream-100"
+                  aria-label="Cerrar"
                 >
-                  <X className="w-5 h-5" />
+                  <X className="w-4 h-4" />
                 </button>
               </div>
 
-              {/* Subida Multi-formato */}
               <DocumentUploader onUploadSuccess={handleUploadSuccess} />
 
-              {/* Lista de Documentos Propios + Leyes Base */}
               <DocumentList
                 health={health}
                 documents={documents}
@@ -432,15 +416,10 @@ export const App: React.FC = () => {
                 isAuthenticated={Boolean(user)}
               />
             </div>
-
-            <div className="pt-4 border-t border-cream-200 text-xs text-slate-500 text-center font-mono">
-              LegalProp AI • Aislamiento privado por cuenta (RNF04) • Ley 820 & Ley 675
-            </div>
           </div>
         </div>
       )}
 
-      {/* Modal de Login / Registro / Recuperación de Contraseña */}
       <AuthModal
         isOpen={isAuthModalOpen}
         initialTab={authModalTab}
@@ -448,7 +427,6 @@ export const App: React.FC = () => {
         onAuthSuccess={handleAuthSuccess}
       />
 
-      {/* Modal de Perfil y Privacidad (Habeas Data) */}
       <AccountProfileModal
         isOpen={isProfileModalOpen}
         user={user}
@@ -457,14 +435,12 @@ export const App: React.FC = () => {
         onAccountDeleted={handleLogout}
       />
 
-      {/* Modal Calculadora Legal de IPC */}
       <IpcCalculatorModal
         isOpen={isIpcModalOpen}
         onClose={() => setIsIpcModalOpen(false)}
         onAskInChat={(prompt) => handleSendMessage(prompt, true)}
       />
 
-      {/* Modal Acerca del Proyecto */}
       <AboutModal isOpen={isAboutModalOpen} onClose={() => setIsAboutModalOpen(false)} />
     </div>
   );

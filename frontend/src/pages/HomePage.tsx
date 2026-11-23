@@ -21,7 +21,7 @@ interface HomePageProps {
 
 const QUICK_HOME_PROMPTS = [
   '¿Cuánto puede subir mi arriendo este año según el IPC?',
-  '¿Me pueden exigir un depósito en efectivo para arrendar?',
+  '¿Qué cláusulas debo verificar antes de firmar un contrato?',
   '¿La administración puede cobrarme multa sin debido proceso?',
 ];
 
@@ -103,16 +103,16 @@ export const HomePage: React.FC<HomePageProps> = ({ user, onNavigate }) => {
             <div className="lg:col-span-7 space-y-6">
               <div className="inline-flex items-center gap-2 text-xs font-medium text-teal-800 bg-teal-50 border border-teal-200/80 px-3 py-1 rounded-full">
                 <Scale className="w-3.5 h-3.5" />
-                <span>Colombia • Ley 820 de 2003 y Ley 675 de 2001</span>
+                <span>Asistente Legal Colombia • Propiedad Horizontal, Arriendos y Contratos</span>
               </div>
 
               <h1 className="text-3xl sm:text-5xl font-bold tracking-tight text-slate-950 leading-[1.12] font-display">
-                Orientación jurídica clara sobre arriendos y propiedad horizontal.
+                Tu asistente legal claro para propiedad horizontal, arriendos y contratos.
               </h1>
 
               <p className="text-sm sm:text-base text-slate-600 leading-relaxed max-w-xl">
-                Consulta tus derechos y deberes en lenguaje cotidiano, analiza reglamentos internos o contratos en{' '}
-                <strong className="text-slate-800">PDF, Word o TXT</strong> y valida incrementos de canon según el IPC vigente — siempre con respaldo normativo verificable.
+                Especializado en <strong className="text-slate-800">Ley 675, Ley 820 y verificación de contratos</strong> en{' '}
+                <strong className="text-slate-800">PDF, Word o TXT</strong> — y listo para orientarte en otras consultas legales cotidianas en Colombia con respaldo normativo verificable.
               </p>
 
               {/* Caja interactiva de consulta directa hacia /chat/new?q=... */}
@@ -309,18 +309,18 @@ export const HomePage: React.FC<HomePageProps> = ({ user, onNavigate }) => {
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
               <div className="p-6 rounded-2xl bg-white border border-cream-200 space-y-2.5">
-                <Scale className="w-5 h-5 text-teal-700" />
-                <h3 className="text-sm font-bold text-slate-950">Ley 820 de 2003 — Arriendos</h3>
+                <Building2 className="w-5 h-5 text-teal-700" />
+                <h3 className="text-sm font-bold text-slate-950">Propiedad Horizontal y Arriendos</h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Topes de reajuste anual con IPC, prohibición de depósitos en efectivo, obligaciones de partes, preavisos de 3 meses, indemnizaciones y causales de restitución.
+                  Especialidad principal en Ley 675 de 2001 (asambleas, quórum del 70%, cuotas, mora, convivencia) y Ley 820 de 2003 (reajustes IPC, prohibición de depósitos, preavisos y restitución).
                 </p>
               </div>
 
               <div className="p-6 rounded-2xl bg-white border border-cream-200 space-y-2.5">
-                <Building2 className="w-5 h-5 text-teal-700" />
-                <h3 className="text-sm font-bold text-slate-950">Ley 675 de 2001 — Propiedad Horizontal</h3>
+                <Scale className="w-5 h-5 text-teal-700" />
+                <h3 className="text-sm font-bold text-slate-950">Verificación de Contratos y Consultas Legales</h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Cuotas ordinarias y extraordinarias, quórum calificado del 70%, intereses de mora, impugnación de asambleas, ruidos, mascotas y uso de bienes esenciales.
+                  Revisa contratos de arrendamiento, prestación de servicios, compraventa o acuerdos privados para detectar riesgos y cláusulas abusivas, y resuelve otras consultas legales en Colombia.
                 </p>
               </div>
 
@@ -328,7 +328,7 @@ export const HomePage: React.FC<HomePageProps> = ({ user, onNavigate }) => {
                 <Calculator className="w-5 h-5 text-teal-700" />
                 <h3 className="text-sm font-bold text-slate-950">Calculadora IPC y Constancias PDF</h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Computa automáticamente el canon máximo permitido según el IPC del año anterior y el límite del 1% del valor comercial, y exporta tus consultas en PDF.
+                  Computa automáticamente el canon máximo permitido según el IPC oficial y el límite del 1% del valor comercial, y exporta tus consultas y citas normativas en PDF.
                 </p>
               </div>
             </div>

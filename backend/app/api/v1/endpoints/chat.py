@@ -129,21 +129,25 @@ def _evaluate_disambiguation(
         )
 
     # Caso 3: Similitud muy baja y consulta muy corta
-    if top_score < 0.30 and len(words) < 8:
+    if top_score < 0.30 and len(words) < 6:
         return DisambiguationInfo(
             needed=True,
-            reason="La consulta es muy breve para determinar con precisión el régimen normativo aplicable.",
+            reason="La consulta es muy breve para determinar con precisión el área legal aplicable.",
             clarifying_questions=[
-                "¿Tu duda corresponde a un contrato de arrendamiento o a convivencia/administración en propiedad horizontal?",
+                "¿Tu consulta corresponde a propiedad horizontal, arrendamiento, verificación de un contrato o un tema legal general?",
             ],
             quick_options=[
                 DisambiguationOption(
-                    label="Tema de Arrendamiento (Ley 820)",
+                    label="Propiedad Horizontal (Ley 675)",
+                    followup_query=f"{query} — enfocado en régimen de propiedad horizontal (Ley 675 de 2001)",
+                ),
+                DisambiguationOption(
+                    label="Arrendamiento (Ley 820)",
                     followup_query=f"{query} — enfocado en contrato de arrendamiento de vivienda urbana (Ley 820 de 2003)",
                 ),
                 DisambiguationOption(
-                    label="Tema de Propiedad Horizontal (Ley 675)",
-                    followup_query=f"{query} — enfocado en régimen de propiedad horizontal (Ley 675 de 2001)",
+                    label="Contrato / Consulta legal general",
+                    followup_query=f"{query} — enfocado en revisión contractual y orientación legal general en Colombia",
                 ),
             ],
         )
@@ -241,8 +245,9 @@ async def _prepare_chat_context(
 
     has_user_docs = any(not c.get("is_public", True) for c in retrieved_chunks)
 
-    # 2. Búsqueda web en tiempo real (manual o automática para IPC / jurisprudencia / datos vigentes)
-    auto_web = should_trigger_web_search(request.query)
+    # 2. Búsqueda web en tiempo real (manual, automática por palabras clave o baja cobertura local en temas legales generales)
+    top_local_score = retrieved_chunks[0].get("similarity_score", 0.0) if retrieved_chunks else 0.0
+    auto_web = should_trigger_web_search(request.query) or (not has_user_docs and top_local_score < 0.34)
     web_enabled = bool(request.use_web_fallback or auto_web)
     web_results: List[Dict[str, Any]] = []
     web_context_parts: List[str] = []

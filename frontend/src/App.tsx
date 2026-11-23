@@ -118,7 +118,7 @@ export const App: React.FC = () => {
   // Actualizar título de la pestaña según la ruta y conversación activa
   useEffect(() => {
     if (route.page === 'home') {
-      document.title = 'LegalProp AI — Asistente Legal de Arriendos y Propiedad Horizontal';
+      document.title = 'LegalProp AI — Asistente Legal de Propiedad Horizontal, Arriendos y Contratos';
     } else if (route.page === 'login') {
       document.title = 'Iniciar sesión — LegalProp AI';
     } else if (route.page === 'onboarding') {

@@ -34,9 +34,9 @@ const PROMPTS_BY_FOCUS: Record<string, string[]> = {
     '¿Pueden restringirme el acceso a la portería por mora en administración?',
   ],
   all: [
+    '¿Qué cláusulas riesgosas debo verificar antes de firmar un contrato?',
     '¿Cuánto puede subir mi arriendo este año según el IPC?',
     '¿Qué quórum se exige en asamblea para cuotas extraordinarias (Ley 675)?',
-    '¿Qué obligaciones tiene el propietario frente a reparaciones locativas?',
   ],
 };
 
@@ -140,8 +140,8 @@ export const WelcomeOnboardingPage: React.FC<WelcomeOnboardingPageProps> = ({
                     },
                     {
                       value: null as FocusChoice,
-                      title: 'Ambos temas',
-                      desc: 'Búsqueda abierta en toda la normativa colombiana.',
+                      title: 'Contratos y Legal General',
+                      desc: 'Revisión de contratos y consultas legales generales en Colombia.',
                       icon: Layers,
                     },
                   ].map((opt) => {

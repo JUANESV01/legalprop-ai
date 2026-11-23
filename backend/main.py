@@ -104,8 +104,48 @@ def seed_master_user() -> None:
         db.close()
 
 
+BASE_NORMATIVAS_META = {
+    "ley_arriendos_ejemplo.md": {
+        "doc_id": "base_ley_arrien",
+        "title": "Ley 820 de 2003 — Régimen de Arrendamiento de Vivienda Urbana",
+        "norma_numero": "Ley 820 de 2003",
+        "category": "arriendo",
+    },
+    "reglamento_ph_ejemplo.md": {
+        "doc_id": "base_reglamento",
+        "title": "Ley 675 de 2001 — Régimen de Propiedad Horizontal",
+        "norma_numero": "Ley 675 de 2001",
+        "category": "propiedad_horizontal",
+    },
+    "guia_minvivienda_propiedad_horizontal.md": {
+        "doc_id": "base_minviv_ph",
+        "title": "Guía Oficial Minvivienda — Propiedad Horizontal y Normas Complementarias",
+        "norma_numero": "Cartilla Minvivienda PH / Ley 675",
+        "category": "propiedad_horizontal",
+    },
+    "abc_arrendadores_vivienda_habitat.md": {
+        "doc_id": "base_abc_arrend",
+        "title": "ABC de Arrendadores de Vivienda — Secretaría del Hábitat (Bogotá)",
+        "norma_numero": "ABC Arrendadores / Ley 820",
+        "category": "arriendo",
+    },
+    "ley_1581_2012_proteccion_datos.md": {
+        "doc_id": "base_ley_1581",
+        "title": "Ley Estatutaria 1581 de 2012 — Protección de Datos Personales (Habeas Data)",
+        "norma_numero": "Ley 1581 de 2012",
+        "category": "general",
+    },
+    "ley_80_1993_contratacion_estatal.md": {
+        "doc_id": "base_ley_80",
+        "title": "Ley 80 de 1993 — Estatuto General de Contratación de la Administración Pública",
+        "norma_numero": "Ley 80 de 1993",
+        "category": "general",
+    },
+}
+
+
 def preload_base_normativas() -> None:
-    """Sincroniza el corpus legal fundacional (Ley 820 de 2003 y Ley 675 de 2001)."""
+    """Sincroniza el corpus legal público fundacional (Ley 820, Ley 675, Minvivienda, Hábitat, Ley 1581 y Ley 80)."""
     try:
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "docs", "normativas_base"))
         if not os.path.exists(base_dir):
@@ -127,15 +167,18 @@ def preload_base_normativas() -> None:
                     content = f.read()
 
                 content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-                is_arriendo = "arriendo" in file_name.lower()
-                category = "arriendo" if is_arriendo else "propiedad_horizontal"
-                doc_title = (
-                    "Ley 820 de 2003 — Arrendamiento de Vivienda Urbana"
-                    if is_arriendo
-                    else "Ley 675 de 2001 — Régimen de Propiedad Horizontal"
-                )
-                norma_num = "Ley 820 de 2003" if is_arriendo else "Ley 675 de 2001"
-                doc_id = f"base_{file_name[:10].replace('.', '_')}"
+                meta = BASE_NORMATIVAS_META.get(file_name)
+                if meta:
+                    doc_id = meta["doc_id"]
+                    doc_title = meta["title"]
+                    norma_num = meta["norma_numero"]
+                    category = meta["category"]
+                else:
+                    is_arriendo = "arriendo" in file_name.lower()
+                    category = "arriendo" if is_arriendo else "propiedad_horizontal"
+                    doc_title = file_name.replace(".md", "").replace("_", " ").title()
+                    norma_num = doc_title
+                    doc_id = f"base_{hashlib.md5(file_name.encode('utf-8')).hexdigest()[:12]}"
 
                 existing = db.query(DocumentRecord).filter(DocumentRecord.id == doc_id).first()
                 existing_vectors = rag_engine.collection.get(where={"doc_id": doc_id})
@@ -179,6 +222,7 @@ def preload_base_normativas() -> None:
                         )
                     else:
                         existing.title = doc_title
+                        existing.category = category
                         existing.norma_numero = norma_num
                         existing.chunks_count = chunks
                         existing.file_size_bytes = len(content.encode("utf-8"))

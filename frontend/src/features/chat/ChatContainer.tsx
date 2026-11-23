@@ -30,9 +30,9 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
 
   const quickPrompts = [
     '¿Cuánto me pueden subir el arriendo este año según el IPC?',
-    '¿Es legal que me exijan depósito en efectivo para arrendar vivienda?',
+    '¿Qué cláusulas de riesgo debo revisar antes de firmar un contrato?',
     '¿Qué quórum se exige para aprobar una cuota extraordinaria en un conjunto?',
-    '¿Cuáles son los plazos de preaviso para terminar un contrato de arriendo?',
+    '¿Cómo puedo redactar un derecho de petición o terminar un contrato sin multa?',
   ];
 
   return (
@@ -45,7 +45,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
               {userName ? `Hola, ${userName.split(' ')[0]}.` : 'Bienvenido a LegalProp.'}
             </h1>
             <p className="text-sm sm:text-base text-slate-600 leading-relaxed max-w-xl">
-              Consulta dudas sobre contratos de arrendamiento y propiedad horizontal en Colombia, o sube tu reglamento en PDF o Word para analizarlo directamente.
+              Tu asistente legal en Colombia: consulta sobre propiedad horizontal, arriendos, verificación de contratos u otras dudas jurídicas, o sube un archivo en PDF o Word para analizarlo directamente.
             </p>
           </div>
 

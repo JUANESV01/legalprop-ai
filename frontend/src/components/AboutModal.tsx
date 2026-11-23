@@ -35,10 +35,10 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
           {/* Introducción */}
           <div>
             <h3 className="text-base font-bold text-slate-900 mb-2 font-display">
-              Orientación Jurídica Inmobiliaria para Colombia
+              Asistente Legal Inteligente para Colombia
             </h3>
             <p className="text-slate-600">
-              <strong>LegalProp AI</strong> es un asistente digital especializado en resolver consultas cotidianas sobre el régimen de arrendamiento de vivienda urbana y la convivencia en conjuntos residenciales y edificios sometidos a propiedad horizontal.
+              <strong>LegalProp AI</strong> (producto de <strong>RTK Solutions</strong>) es un asistente legal digital especializado principalmente en <strong>propiedad horizontal</strong>, <strong>arrendamientos</strong> y <strong>verificación de contratos</strong>, con capacidad para orientar también otras consultas legales cotidianas en Colombia.
             </p>
           </div>
 

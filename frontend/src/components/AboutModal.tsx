@@ -104,7 +104,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
         {/* Pie del modal */}
         <div className="p-4 bg-white border-t border-cream-200 flex items-center justify-between">
           <span className="text-[11px] text-slate-500 font-mono">
-            Proyecto LegalProp AI • 2026
+            LegalProp AI • Un producto de RTK Solutions (2026)
           </span>
           <button
             onClick={onClose}

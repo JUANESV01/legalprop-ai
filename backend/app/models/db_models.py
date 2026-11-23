@@ -41,6 +41,10 @@ class User(Base):
     failed_attempts = Column(Integer, default=0, nullable=False)
     locked_until = Column(DateTime, nullable=True)
 
+    # Consentimiento informado Política de Tratamiento de Datos (Ley 1581 de 2012)
+    privacy_policy_accepted_at = Column(DateTime, nullable=True)
+    privacy_policy_version = Column(String(20), nullable=True)
+
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

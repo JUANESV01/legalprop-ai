@@ -22,6 +22,10 @@ class RegisterRequest(BaseModel):
         max_length=3,
         description="Exactamente 3 preguntas de seguridad distintas para recuperación segura sin pagos",
     )
+    accepted_privacy_policy: bool = Field(
+        True,
+        description="Autorización previa, expresa e informada de la Política de Tratamiento de Datos (Ley 1581 de 2012)",
+    )
 
 
 class LoginRequest(BaseModel):
@@ -36,6 +40,8 @@ class UserProfile(BaseModel):
     role: str
     security_questions_count: int = 3
     has_recovery_code: bool = True
+    privacy_policy_version: Optional[str] = None
+    privacy_policy_accepted_at: Optional[datetime] = None
     created_at: datetime
     documents_count: int = 0
     conversations_count: int = 0

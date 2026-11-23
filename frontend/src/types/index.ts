@@ -13,6 +13,8 @@ export interface UserProfile {
   role: UserRole;
   security_questions_count: number;
   has_recovery_code: boolean;
+  privacy_policy_version?: string | null;
+  privacy_policy_accepted_at?: string | null;
   created_at: string;
   documents_count: number;
   conversations_count: number;

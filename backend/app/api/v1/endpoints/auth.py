@@ -50,6 +50,7 @@ router = APIRouter()
 EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
+PRIVACY_POLICY_VERSION = "v1.1-2026"
 
 
 def _normalize_email(email: str) -> str:
@@ -86,6 +87,8 @@ def _build_user_profile(user: User, db: Session) -> UserProfile:
         role=user.role,
         security_questions_count=len(questions),
         has_recovery_code=bool(user.recovery_code_hash),
+        privacy_policy_version=user.privacy_policy_version,
+        privacy_policy_accepted_at=user.privacy_policy_accepted_at,
         created_at=user.created_at,
         documents_count=docs_count,
         conversations_count=convs_count,
@@ -149,13 +152,78 @@ def _reset_failed_attempts(user: User, db: Session) -> None:
         db.commit()
 
 
+@router.get(
+    "/privacy-policy",
+    summary="Consultar Política de Tratamiento de Datos y Términos de Uso (RTK Solutions / Ley 1581)",
+)
+def get_privacy_policy():
+    return {
+        "version": PRIVACY_POLICY_VERSION,
+        "effective_date": "2026-11-23",
+        "legal_framework": [
+            "Constitución Política de Colombia (Art. 15 — Habeas Data)",
+            "Ley Estatutaria 1581 de 2012",
+            "Decreto Reglamentario 1377 de 2013",
+        ],
+        "controller": {
+            "brand": "RTK Solutions",
+            "product": "LegalProp AI",
+            "legal_status_notice": (
+                "RTK Solutions es una iniciativa tecnológica independiente en etapa de desarrollo "
+                "(no constituida aún como persona jurídica societaria). LegalProp AI hace parte de "
+                "los productos digitales de RTK Solutions y fue desarrollado inicialmente como proyecto "
+                "académico de la asignatura Laboratorio de Software (UTP)."
+            ),
+            "contact_channel": "robotiktronikx@gmail.com",
+            "location": "Colombia",
+        },
+        "data_collected": [
+            "Nombre completo, correo electrónico y perfil de uso (inquilino, propietario o administrador).",
+            "Credenciales cifradas irreversiblemente con bcrypt (contraseña, 3 preguntas de seguridad y código de respaldo).",
+            "Historial de conversaciones jurídicas y documentos privados subidos voluntariamente por el titular.",
+            "Fecha/versión de consentimiento y registros técnicos sanitizados de seguridad (IP anonimizada mediante HMAC-SHA256).",
+        ],
+        "ai_processing_and_training_notice": (
+            "Dentro de LegalProp AI los documentos privados de cada cuenta se aíslan estrictamente "
+            "(owner_scope) y no son visibles para otros usuarios. Sin embargo, para generar respuestas, "
+            "las consultas y fragmentos pertinentes se procesan mediante la API de Google Gemini sobre "
+            "HTTPS/TLS; conforme a las condiciones del plan gratuito/estándar de la API, el proveedor de IA "
+            "puede utilizar dichos contenidos para mejorar y entrenar sus modelos. Se recomienda anonimizar "
+            "datos personales de terceros o información altamente confidencial antes de cargar archivos."
+        ),
+        "purposes": [
+            "Prestar orientación normativa informativa sobre arriendos (Ley 820 de 2003) y propiedad horizontal (Ley 675 de 2001).",
+            "Procesar y analizar documentos cargados voluntariamente por el titular bajo aislamiento entre cuentas.",
+            "Mejorar la calidad operativa del asistente y permitir el procesamiento por modelos de IA (Google Gemini API).",
+            "Proteger las cuentas con JWT, bloqueo anti-fuerza bruta y garantizar acceso, exportación JSON y supresión definitiva.",
+        ],
+        "rights": [
+            "Conocer, actualizar y rectificar sus datos personales.",
+            "Solicitar prueba de la autorización otorgada (registrada con fecha y versión).",
+            "Descargar una copia completa de sus datos en formato JSON (GET /api/v1/auth/export-data).",
+            "Revocar la autorización y solicitar la supresión definitiva de cuenta, historial y archivos (DELETE /api/v1/auth/me).",
+        ],
+        "terms_summary": [
+            "Servicio ofrecido con fines informativos y orientativos ('tal cual'), sin constituir asesoría legal vinculante ni relación abogado-cliente.",
+            "RTK Solutions no asume responsabilidad por decisiones contractuales, económicas o judiciales adoptadas únicamente con base en respuestas generadas por IA.",
+            "El usuario conserva la propiedad de sus documentos y es responsable de contar con autorización para subirlos.",
+        ],
+    }
+
+
 @router.post(
     "/register",
     response_model=AuthResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Registrar usuario con 3 preguntas de seguridad y código maestro de respaldo",
+    summary="Registrar usuario con 3 preguntas de seguridad, código de respaldo y consentimiento Ley 1581",
 )
 def register_user(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)):
+    if not payload.accepted_privacy_policy:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Debes aceptar la Política de Tratamiento de Datos Personales (Ley 1581 de 2012) para crear tu cuenta.",
+        )
+
     email = _normalize_email(payload.email)
     if db.query(User).filter(User.email == email).first():
         raise HTTPException(
@@ -180,6 +248,7 @@ def register_user(payload: RegisterRequest, request: Request, db: Session = Depe
     ]
 
     plain_recovery_code = generate_recovery_code()
+    consent_timestamp = datetime.utcnow()
 
     user = User(
         email=email,
@@ -190,12 +259,21 @@ def register_user(payload: RegisterRequest, request: Request, db: Session = Depe
         security_answer_hash=hashed_questions[0]["answer_hash"],
         security_questions_json=json.dumps(hashed_questions, ensure_ascii=False),
         recovery_code_hash=hash_recovery_code(plain_recovery_code),
+        privacy_policy_accepted_at=consent_timestamp,
+        privacy_policy_version=PRIVACY_POLICY_VERSION,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
 
-    _log_security_event(db, "USER_REGISTER", "SUCCESS", user.id, request, f"Cuenta creada (rol: {user.role})")
+    _log_security_event(
+        db,
+        "USER_REGISTER",
+        "SUCCESS",
+        user.id,
+        request,
+        f"Cuenta creada (rol: {user.role}; Política {PRIVACY_POLICY_VERSION} aceptada)",
+    )
 
     token = create_access_token(subject=user.id, extra_claims={"email": user.email, "role": user.role})
     return AuthResponse(
@@ -427,6 +505,12 @@ def export_my_data(
             "full_name": current_user.full_name,
             "email": current_user.email,
             "role": current_user.role,
+            "privacy_policy_version": current_user.privacy_policy_version,
+            "privacy_policy_accepted_at": (
+                current_user.privacy_policy_accepted_at.isoformat() + "Z"
+                if current_user.privacy_policy_accepted_at
+                else None
+            ),
             "created_at": current_user.created_at.isoformat(),
         },
         "documents": [

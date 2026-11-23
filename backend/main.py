@@ -17,7 +17,7 @@ import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from app.api.v1.router import api_router
 from app.core.config import settings
@@ -296,7 +296,7 @@ async def add_security_headers(request: Request, call_next):
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 # Servir Frontend SPA compilado (frontend/dist) automáticamente en despliegue unificado (Render)
-FRONTEND_DIST_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
+FRONTEND_DIST_DIR = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
 FRONTEND_ASSETS_DIR = os.path.join(FRONTEND_DIST_DIR, "assets")
 FRONTEND_INDEX_HTML = os.path.join(FRONTEND_DIST_DIR, "index.html")
 
@@ -318,14 +318,23 @@ def root():
     }
 
 
+@app.get("/robots.txt", include_in_schema=False)
+def robots_txt():
+    return PlainTextResponse(
+        "User-agent: *\nAllow: /\nDisallow: /api/\n",
+        media_type="text/plain",
+    )
+
+
 if os.path.isfile(FRONTEND_INDEX_HTML):
     @app.get("/{full_path:path}", include_in_schema=False)
     def serve_spa_fallback(full_path: str):
-        if full_path.startswith("api/") or full_path in ("docs", "redoc", "openapi.json"):
+        if full_path == "api" or full_path.startswith("api/") or full_path in ("docs", "redoc", "openapi.json"):
             raise HTTPException(status_code=404, detail="Not Found")
-        candidate = os.path.join(FRONTEND_DIST_DIR, full_path)
-        if full_path and os.path.isfile(candidate):
-            return FileResponse(candidate)
+        if full_path:
+            candidate = os.path.realpath(os.path.join(FRONTEND_DIST_DIR, full_path))
+            if os.path.commonpath([FRONTEND_DIST_DIR, candidate]) == FRONTEND_DIST_DIR and os.path.isfile(candidate):
+                return FileResponse(candidate)
         return FileResponse(FRONTEND_INDEX_HTML)
 
 

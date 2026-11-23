@@ -98,6 +98,7 @@ export const apiService = {
     password: string;
     role: UserRole;
     security_questions: SecurityQuestionItem[];
+    accepted_privacy_policy: boolean;
   }): Promise<AuthResponse> {
     const response = await fetch(`${API_BASE_URL}/auth/register`, {
       method: 'POST',

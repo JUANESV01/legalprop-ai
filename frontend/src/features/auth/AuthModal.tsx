@@ -155,6 +155,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           { question: q2, answer: a2 },
           { question: q3, answer: a3 },
         ],
+        accepted_privacy_policy: true,
       });
       if (res.recovery_code) {
         setCreatedRecoveryCode(res.recovery_code);
@@ -943,9 +944,25 @@ export const AccountProfileModal: React.FC<AccountProfileModalProps> = ({
 
           {/* Privacidad Habeas Data */}
           <div className="space-y-2 border-t border-cream-200 pt-3">
-            <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-              Privacidad (Ley 1581 de 2012)
+            <div className="flex items-center justify-between">
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                Privacidad (Ley 1581 de 2012)
+              </div>
+              <a
+                href="/privacidad"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[11px] font-semibold text-teal-800 hover:underline"
+              >
+                Ver política
+              </a>
             </div>
+            {user.privacy_policy_accepted_at && (
+              <div className="text-[11px] text-slate-500">
+                Autorización registrada ({user.privacy_policy_version || 'v1.1-2026'}) el{' '}
+                {new Date(user.privacy_policy_accepted_at).toLocaleDateString('es-CO')}
+              </div>
+            )}
             <button
               type="button"
               onClick={handleExport}

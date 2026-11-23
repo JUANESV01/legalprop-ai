@@ -9,6 +9,7 @@ interface HeaderProps {
   userDocsCount: number;
   conversationTitle?: string;
   onToggleSidebar: () => void;
+  onGoHome: () => void;
   onOpenDocuments: () => void;
   onOpenIpc: () => void;
 }
@@ -19,6 +20,7 @@ export const Header: React.FC<HeaderProps> = ({
   userDocsCount,
   conversationTitle,
   onToggleSidebar,
+  onGoHome,
   onOpenDocuments,
   onOpenIpc,
 }) => {
@@ -37,7 +39,14 @@ export const Header: React.FC<HeaderProps> = ({
           {sidebarOpen ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeft className="w-4 h-4" />}
         </button>
 
-        <Logo size="sm" showText={true} />
+        <button
+          type="button"
+          onClick={onGoHome}
+          className="text-left focus:outline-none"
+          title="Ir a la página principal (/home)"
+        >
+          <Logo size="sm" showText={true} />
+        </button>
 
         {conversationTitle && (
           <>

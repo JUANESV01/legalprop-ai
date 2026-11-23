@@ -1,5 +1,5 @@
 // LegalProp AI — Componente raíz de la Vista (Patrón MVC)
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { ChatContainer } from './features/chat/ChatContainer';
@@ -8,9 +8,14 @@ import { DocumentUploader } from './features/documents/DocumentUploader';
 import { DocumentList } from './features/documents/DocumentList';
 import { LegalDisclaimer } from './components/LegalDisclaimer';
 import { AboutModal } from './components/AboutModal';
-import { AuthModal, AccountProfileModal, AuthTab } from './features/auth/AuthModal';
+import { AccountProfileModal, AuthTab } from './features/auth/AuthModal';
 import { IpcCalculatorModal } from './features/tools/IpcCalculatorModal';
 import { MasterPanelModal } from './features/admin/MasterPanelModal';
+import { HomePage } from './pages/HomePage';
+import { OnboardingPage } from './pages/OnboardingPage';
+import { WelcomeOnboardingPage } from './pages/WelcomeOnboardingPage';
+import { PrivacyPolicyPage } from './pages/PrivacyPolicyPage';
+import { useAppRoute } from './hooks/useAppRoute';
 import {
   ChatMessage,
   BackendHealthResponse,
@@ -23,6 +28,8 @@ import { apiService, getStoredToken } from './services/api';
 import { X, Layers } from 'lucide-react';
 
 export const App: React.FC = () => {
+  const { route, navigate } = useAppRoute();
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<
@@ -30,34 +37,39 @@ export const App: React.FC = () => {
   >(null);
   const [health, setHealth] = useState<BackendHealthResponse | null>(null);
 
-  // Panel lateral desplegable (abierto por defecto en escritorio, oculto en móvil)
+  // Panel lateral desplegable
   const [sidebarOpen, setSidebarOpen] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
   );
 
-  // Modales
+  // Modales dentro del chat
   const [isDocModalOpen, setIsDocModalOpen] = useState(false);
   const [docModalDefaultPublic, setDocModalDefaultPublic] = useState(false);
   const [isAboutModalOpen, setIsAboutModalOpen] = useState(false);
   const [isIpcModalOpen, setIsIpcModalOpen] = useState(false);
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [authModalTab, setAuthModalTab] = useState<AuthTab>('login');
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isMasterPanelOpen, setIsMasterPanelOpen] = useState(false);
 
   // Estado de cuenta, historial y documentos
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [conversationId, setConversationId] = useState<string | undefined>(undefined);
   const [conversationTitle, setConversationTitle] = useState<string | undefined>(undefined);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+  const [isCheckingConversation, setIsCheckingConversation] = useState(false);
+
+  // Evita recargar la conversación que acabamos de crear por streaming
+  const skipNextRouteLoadRef = useRef<string | null>(null);
+  const consumedQueryRef = useRef<string | null>(null);
+  const sendMessageRef = useRef<(query: string, useWebFallback: boolean) => void>(() => {});
 
   const fetchHealth = useCallback(async () => {
     try {
       setHealth(await apiService.checkHealth());
     } catch {
-      /* backend aún iniciando */
+      /* backend iniciando */
     }
   }, []);
 
@@ -81,6 +93,7 @@ export const App: React.FC = () => {
   const refreshProfile = useCallback(async () => {
     if (!getStoredToken()) {
       setUser(null);
+      setAuthReady(true);
       return;
     }
     try {
@@ -88,6 +101,8 @@ export const App: React.FC = () => {
     } catch {
       apiService.logout();
       setUser(null);
+    } finally {
+      setAuthReady(true);
     }
   }, []);
 
@@ -99,6 +114,113 @@ export const App: React.FC = () => {
     const interval = setInterval(fetchHealth, 25000);
     return () => clearInterval(interval);
   }, [fetchHealth, refreshProfile, fetchDocuments, fetchConversations]);
+
+  // Actualizar título de la pestaña según la ruta y conversación activa
+  useEffect(() => {
+    if (route.page === 'home') {
+      document.title = 'LegalProp AI — Asistente Legal de Arriendos y Propiedad Horizontal';
+    } else if (route.page === 'login') {
+      document.title = 'Iniciar sesión — LegalProp AI';
+    } else if (route.page === 'onboarding') {
+      document.title = 'Bienvenida — LegalProp AI';
+    } else if (route.page === 'privacy') {
+      document.title = 'Política de Tratamiento de Datos — LegalProp AI';
+    } else if (conversationTitle) {
+      document.title = `${conversationTitle} — LegalProp AI`;
+    } else {
+      document.title = 'Nueva consulta — LegalProp AI';
+    }
+  }, [route.page, conversationTitle]);
+
+  // Si ya está autenticado y entra a /login, redirigir a /chat/new
+  useEffect(() => {
+    if (authReady && user && route.page === 'login') {
+      navigate('/chat/new', { replace: true });
+    }
+  }, [authReady, user, route.page, navigate]);
+
+  const loadConversationById = useCallback(
+    async (id: string) => {
+      setIsCheckingConversation(true);
+      try {
+        const detail = await apiService.getConversation(id);
+        setConversationId(detail.id);
+        setConversationTitle(detail.title);
+        setMessages(
+          detail.messages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            citations: m.citations,
+            disambiguation: m.metadata?.disambiguation || null,
+            metadata: m.metadata,
+            timestamp: new Date(m.created_at).toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+          }))
+        );
+      } catch {
+        // Si la conversación no existe, está incompleta o no pertenece a la sesión actual, redirigir a '/'
+        setConversationId(undefined);
+        setConversationTitle(undefined);
+        setMessages([]);
+        navigate('/', { replace: true });
+      } finally {
+        setIsCheckingConversation(false);
+      }
+    },
+    [navigate]
+  );
+
+  // Sincronizar URL (/chat/new y /chat/:id) con el estado del chat
+  useEffect(() => {
+    if (route.page !== 'chat') {
+      consumedQueryRef.current = null;
+      return;
+    }
+    if (!authReady) return;
+
+    if (route.openDocs) {
+      setDocModalDefaultPublic(false);
+      setIsDocModalOpen(true);
+      window.history.replaceState(null, '', '/chat/new');
+    }
+
+    if (route.openIpc) {
+      setIsIpcModalOpen(true);
+      window.history.replaceState(null, '', '/chat/new');
+    }
+
+    if (route.conversationId === null) {
+      if (route.initialQuery && consumedQueryRef.current !== route.initialQuery) {
+        const pendingQ = route.initialQuery;
+        consumedQueryRef.current = pendingQ;
+        setConversationId(undefined);
+        setConversationTitle(undefined);
+        setMessages([]);
+        window.history.replaceState(null, '', '/chat/new');
+        sendMessageRef.current(pendingQ, true);
+        return;
+      }
+
+      if (conversationId !== undefined) {
+        setConversationId(undefined);
+        setConversationTitle(undefined);
+        setMessages([]);
+      }
+      return;
+    }
+
+    if (skipNextRouteLoadRef.current === route.conversationId) {
+      skipNextRouteLoadRef.current = null;
+      return;
+    }
+
+    if (route.conversationId !== conversationId) {
+      loadConversationById(route.conversationId);
+    }
+  }, [authReady, route, conversationId, loadConversationById]);
 
   const handleAuthSuccess = (loggedUser: UserProfile) => {
     setUser(loggedUser);
@@ -119,36 +241,23 @@ export const App: React.FC = () => {
     setSelectedDocIds([]);
     fetchDocuments();
     fetchConversations();
+    navigate('/chat/new', { replace: true });
   };
 
   const handleNewConversation = () => {
     setMessages([]);
     setConversationId(undefined);
     setConversationTitle(undefined);
+    navigate('/chat/new');
   };
 
-  const handleSelectConversation = async (id: string) => {
-    try {
-      const detail = await apiService.getConversation(id);
-      setConversationId(detail.id);
-      setConversationTitle(detail.title);
-      setMessages(
-        detail.messages.map((m) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          citations: m.citations,
-          disambiguation: m.metadata?.disambiguation || null,
-          metadata: m.metadata,
-          timestamp: new Date(m.created_at).toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit',
-          }),
-        }))
-      );
-    } catch (err) {
-      console.error('Error abriendo conversación:', err);
-    }
+  const handleSelectConversation = (id: string) => {
+    navigate(`/chat/${encodeURIComponent(id)}`);
+  };
+
+  const handleOpenAuthRoute = (tab: AuthTab) => {
+    const query = tab === 'login' ? '' : `?tab=${tab}`;
+    navigate(`/login${query}`);
   };
 
   const handleRenameConversation = async (id: string, title: string) => {
@@ -228,6 +337,15 @@ export const App: React.FC = () => {
     setMessages((prev) => [...prev, userMsg, placeholderAssistant]);
     setIsLoading(true);
 
+    const syncConversationUrl = (newId?: string) => {
+      if (!newId) return;
+      if (newId !== conversationId) {
+        skipNextRouteLoadRef.current = newId;
+        setConversationId(newId);
+        navigate(`/chat/${encodeURIComponent(newId)}`, { replace: true });
+      }
+    };
+
     try {
       await apiService.streamChat(
         {
@@ -239,7 +357,7 @@ export const App: React.FC = () => {
         },
         {
           onMetadata: (meta) => {
-            if (meta.conversation_id) setConversationId(meta.conversation_id);
+            syncConversationUrl(meta.conversation_id);
             if (meta.conversation_title) setConversationTitle(meta.conversation_title);
             setMessages((prev) =>
               prev.map((m) =>
@@ -278,7 +396,7 @@ export const App: React.FC = () => {
             );
           },
           onDone: (info) => {
-            if (info.conversation_id) setConversationId(info.conversation_id);
+            syncConversationUrl(info.conversation_id);
             if (info.conversation_title) setConversationTitle(info.conversation_title);
             setMessages((prev) =>
               prev.map((m) =>
@@ -322,6 +440,51 @@ export const App: React.FC = () => {
     }
   };
 
+  sendMessageRef.current = handleSendMessage;
+
+  // --- RUTA 1: / (Landing page principal) ---
+  if (route.page === 'home') {
+    return <HomePage user={user} onNavigate={(path) => navigate(path)} />;
+  }
+
+  // --- RUTA 2: /login (Inicio de sesión, Registro y Recuperación) ---
+  if (route.page === 'login') {
+    return (
+      <OnboardingPage
+        initialTab={route.tab}
+        onAuthSuccess={handleAuthSuccess}
+        onNavigate={(path) => navigate(path)}
+      />
+    );
+  }
+
+  // --- RUTA 3: /onboarding (Pasos rápidos de bienvenida para usuarios nuevos) ---
+  if (route.page === 'onboarding') {
+    return (
+      <WelcomeOnboardingPage
+        user={user}
+        onSelectCategory={setSelectedCategory}
+        onUploadSuccess={handleUploadSuccess}
+        onNavigate={(path) => navigate(path)}
+      />
+    );
+  }
+
+  // --- RUTA 4: /privacidad (Política de Tratamiento de Datos Personales — Ley 1581 de 2012) ---
+  if (route.page === 'privacy') {
+    return <PrivacyPolicyPage onNavigate={(path) => navigate(path)} />;
+  }
+
+  // Mientras valida un ID directo de conversación en URL, evitar parpadeo antes de redirigir a '/' si no existe
+  if (route.conversationId && (!authReady || isCheckingConversation) && conversationId !== route.conversationId) {
+    return (
+      <div className="min-h-screen bg-cream-100 flex items-center justify-center text-slate-600 text-xs font-medium">
+        Cargando conversación...
+      </div>
+    );
+  }
+
+  // --- RUTA 3 & 4: /chat/new y /chat/:conversationId ---
   const userDocuments = documents.filter((d) => !d.is_public);
 
   return (
@@ -332,7 +495,11 @@ export const App: React.FC = () => {
         userDocsCount={userDocuments.length}
         conversationTitle={conversationTitle}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
-        onOpenDocuments={() => setIsDocModalOpen(true)}
+        onGoHome={() => navigate('/')}
+        onOpenDocuments={() => {
+          setDocModalDefaultPublic(false);
+          setIsDocModalOpen(true);
+        }}
         onOpenIpc={() => setIsIpcModalOpen(true)}
       />
 
@@ -354,10 +521,7 @@ export const App: React.FC = () => {
           onDeleteConversation={handleDeleteConversation}
           onExportConversationPdf={(id) => apiService.downloadConversationPdf(id)}
           user={user}
-          onOpenAuth={(tab) => {
-            setAuthModalTab(tab);
-            setIsAuthModalOpen(true);
-          }}
+          onOpenAuth={handleOpenAuthRoute}
           onOpenProfile={() => setIsProfileModalOpen(true)}
           onOpenAbout={() => setIsAboutModalOpen(true)}
           onOpenDocuments={() => {
@@ -379,7 +543,10 @@ export const App: React.FC = () => {
           <ChatInput
             onSendMessage={handleSendMessage}
             isLoading={isLoading}
-            onOpenUpload={() => setIsDocModalOpen(true)}
+            onOpenUpload={() => {
+              setDocModalDefaultPublic(false);
+              setIsDocModalOpen(true);
+            }}
             userDocuments={userDocuments}
             selectedDocIds={selectedDocIds}
             onToggleDocId={handleToggleDocId}
@@ -450,13 +617,6 @@ export const App: React.FC = () => {
           fetchHealth();
           fetchDocuments();
         }}
-      />
-
-      <AuthModal
-        isOpen={isAuthModalOpen}
-        initialTab={authModalTab}
-        onClose={() => setIsAuthModalOpen(false)}
-        onAuthSuccess={handleAuthSuccess}
       />
 
       <AccountProfileModal

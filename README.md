@@ -83,8 +83,15 @@ El proyecto sigue el patrón **Modelo–Vista–Controlador (MVC)** con responsa
 
 ---
 
-## 4. Diseño Visual y Experiencia de Usuario (UI/UX)
+## 4. Rutas de la Aplicación, Diseño Visual y UX
 
+- **Rutas SPA limpias (listas para dominio propio como `legalprop.site`):**
+  - `/` *(y `/home` redirige a `/`)*: landing page principal de presentación del proyecto, caja de consulta rápida, cobertura legal y accesos directos.
+  - `/login`: pantalla dedicada de inicio de sesión, registro y recuperación de contraseña.
+  - `/onboarding`: pasos rápidos de bienvenida y configuración inicial para usuarios nuevos (enfoque jurídico y carga opcional de documentos).
+  - `/privacidad`: Política de Tratamiento de Datos Personales completa (Ley 1581 de 2012 y Decreto 1377 de 2013), enlazada desde el registro con autorización expresa.
+  - `/chat/new` *(y `/chat` redirige a `/chat/new`)*: pantalla lista para iniciar una nueva conversación en el asistente.
+  - `/chat/{id}`: acceso directo y recargable a cualquier conversación guardada por su identificador único (cualquier ruta o ID inexistente redirige automáticamente a `/`).
 - **Estética editorial sobria:** lienzo papel marfil (`#F5F1E8`), superficies blancas limpias (`#FFFFFF`), tipografía legible de alto contraste y acento verde petróleo jurídico (`#0E5450`), evitando sobrecarga de tarjetas, emojis o badges ruidosos.
 - **Panel lateral izquierdo desplegable** (`Sidebar.tsx`): colapsable tanto en escritorio como en móvil desde la esquina superior izquierda. Agrupa **Nueva consulta**, **Filtro de enfoque**, **Historial de conversaciones (CRUD)** y, anclado en la parte inferior izquierda, **Mis documentos**, **Calculadora IPC**, **Sobre el proyecto** y **Acceso / Cuenta de usuario**.
 - **Lectura sin distracciones:** el chat muestra la respuesta directa y mantiene las citas/documentos plegados tras el botón **`Ver fuentes (N)`** (se abren al hacer clic o si el usuario solicita explícitamente las fuentes en su pregunta).

@@ -79,6 +79,8 @@ def _ensure_incremental_columns() -> None:
             "recovery_code_hash": "VARCHAR(255)",
             "failed_attempts": "INTEGER NOT NULL DEFAULT 0",
             "locked_until": "TIMESTAMP",
+            "privacy_policy_accepted_at": "TIMESTAMP",
+            "privacy_policy_version": "VARCHAR(20)",
         },
         "documents": {
             "extracted_content": "TEXT",

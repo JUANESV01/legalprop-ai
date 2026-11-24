@@ -2,12 +2,12 @@
 set -o errexit
 
 echo "=== [1/3] Instalando dependencias del Backend (Python) ==="
-pip install --upgrade pip
-pip install -r backend/requirements.txt
+pip install --upgrade pip --quiet
+pip install -r backend/requirements.txt --quiet
 
 echo "=== [2/3] Instalando dependencias y compilando Frontend (React + Vite) ==="
 cd frontend
-npm ci --include=dev
+npm ci --include=dev --no-audit --no-fund
 npm run build
 cd ..
 

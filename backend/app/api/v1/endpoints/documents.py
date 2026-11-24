@@ -218,6 +218,7 @@ def ingest_text_document(
         filename=f"{payload.title}.txt",
     )
 
+    emb_json, emb_model = rag_engine.export_last_embeddings_json()
     doc_rec = DocumentRecord(
         id=doc_id,
         owner_id=current_user.id if current_user else None,
@@ -231,6 +232,8 @@ def ingest_text_document(
         file_size_bytes=len(content_clean.encode("utf-8")),
         content_preview=content_clean[:600],
         extracted_content=content_clean,
+        embeddings_json=emb_json,
+        embedding_model=emb_model,
         content_hash=hashlib.sha256(content_clean.encode("utf-8")).hexdigest(),
         is_public=publish_global,
     )
@@ -333,6 +336,7 @@ async def upload_document_file(
             detail="No se pudo indexar contenido útil del archivo.",
         )
 
+    emb_json, emb_model = rag_engine.export_last_embeddings_json()
     doc_rec = DocumentRecord(
         id=doc_id,
         owner_id=current_user.id if current_user else None,
@@ -346,6 +350,8 @@ async def upload_document_file(
         file_size_bytes=len(content_bytes),
         content_preview=content_str[:650],
         extracted_content=content_str,
+        embeddings_json=emb_json,
+        embedding_model=emb_model,
         content_hash=hashlib.sha256(content_bytes).hexdigest(),
         is_public=publish_global,
     )

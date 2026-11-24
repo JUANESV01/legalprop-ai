@@ -216,6 +216,27 @@ class LegalPropRequirementsTestSuite(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(res["cumple_tope_valor_comercial"])
         self.assertIn("verificado_en_vivo", res)
 
+        # Validar que el endpoint rechaza rangos incoherentes (p. ej. canon 1.500M o valor comercial $10.000)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            r_bad_canon = await client.post(
+                "/api/v1/tools/ipc/calculate",
+                json={"canon_actual": 1_500_000_000, "anio_reajuste": 2026, "consultar_web": False},
+            )
+            self.assertEqual(r_bad_canon.status_code, 422)
+
+            r_bad_comercial = await client.post(
+                "/api/v1/tools/ipc/calculate",
+                json={"canon_actual": 1_500_000, "anio_reajuste": 2026, "valor_comercial_inmueble": 10_000, "consultar_web": False},
+            )
+            self.assertEqual(r_bad_comercial.status_code, 422)
+
+            r_incoherent = await client.post(
+                "/api/v1/tools/ipc/calculate",
+                json={"canon_actual": 5_000_000, "anio_reajuste": 2026, "valor_comercial_inmueble": 20_000_000, "consultar_web": False},
+            )
+            self.assertEqual(r_incoherent.status_code, 422)
+
     def test_03_rf02_rf08_rag_corpus_and_rnf04_isolation(self):
         stats = rag_engine.get_collection_stats()
         self.assertEqual(stats["status"], "ready")
@@ -423,6 +444,10 @@ class LegalPropRequirementsTestSuite(unittest.IsolatedAsyncioTestCase):
                     resp.content.startswith(magic) or (fmt == "txt" and b"CONTRATO" in resp.content),
                     f"Contenido inesperado para .{fmt}",
                 )
+
+            # Verificar soporte HEAD / para sondas de salud de Render (cero HTTP 405)
+            head_resp = await client.head("/")
+            self.assertEqual(head_resp.status_code, 200)
 
 
 if __name__ == "__main__":

@@ -38,10 +38,13 @@ export function setStoredToken(token: string | null): void {
 }
 
 export function getOrCreateGuestSessionId(): string {
-  let id = localStorage.getItem(GUEST_SESSION_KEY);
+  // Limpiar cualquier ID antiguo persistido en localStorage
+  localStorage.removeItem(GUEST_SESSION_KEY);
+  // sessionStorage sobrevive a recargas (F5) en la misma pestaña, pero se borra al cerrar la pestaña
+  let id = sessionStorage.getItem(GUEST_SESSION_KEY);
   if (!id) {
     id = `gs_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-    localStorage.setItem(GUEST_SESSION_KEY, id);
+    sessionStorage.setItem(GUEST_SESSION_KEY, id);
   }
   return id;
 }

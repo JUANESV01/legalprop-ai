@@ -18,6 +18,11 @@ interface IpcCalculatorModalProps {
   onAskInChat: (prompt: string) => void;
 }
 
+const MIN_CANON_COP = 100_000;
+const MAX_CANON_COP = 200_000_000;
+const MIN_COMERCIAL_COP = 10_000_000;
+const MAX_COMERCIAL_COP = 50_000_000_000;
+
 const formatCOP = (val: number) =>
   new Intl.NumberFormat('es-CO', {
     style: 'currency',
@@ -25,12 +30,23 @@ const formatCOP = (val: number) =>
     maximumFractionDigits: 0,
   }).format(val);
 
+const formatDigitsInput = (raw: string): string => {
+  const digits = raw.replace(/\D/g, '').slice(0, 12);
+  if (!digits) return '';
+  return Number(digits).toLocaleString('es-CO');
+};
+
+const parseDigitsInput = (formatted: string): number => {
+  const digits = formatted.replace(/\D/g, '');
+  return digits ? Number(digits) : 0;
+};
+
 export const IpcCalculatorModal: React.FC<IpcCalculatorModalProps> = ({
   isOpen,
   onClose,
   onAskInChat,
 }) => {
-  const [canonActual, setCanonActual] = useState('1500000');
+  const [canonActual, setCanonActual] = useState('1.500.000');
   const [anioReajuste, setAnioReajuste] = useState(2026);
   const [valorComercial, setValorComercial] = useState('');
   const [consultarWeb, setConsultarWeb] = useState(true);
@@ -49,29 +65,76 @@ export const IpcCalculatorModal: React.FC<IpcCalculatorModalProps> = ({
 
   if (!isOpen) return null;
 
+  const handleCanonChange = (val: string) => {
+    setCanonActual(formatDigitsInput(val));
+    setError(null);
+    setResult(null);
+  };
+
+  const handleComercialChange = (val: string) => {
+    setValorComercial(formatDigitsInput(val));
+    setError(null);
+    setResult(null);
+  };
+
+  const handleAnioChange = (yr: number) => {
+    setAnioReajuste(yr);
+    setError(null);
+    setResult(null);
+  };
+
   const handleCalculate = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    const canonNum = Number(canonActual.replace(/[^\d.]/g, ''));
-    if (!canonNum || canonNum <= 0) {
-      setError('Ingresa un valor válido para el canon mensual actual.');
+
+    const canonNum = parseDigitsInput(canonActual);
+    if (!canonNum || canonNum < MIN_CANON_COP || canonNum > MAX_CANON_COP) {
+      setResult(null);
+      setError(
+        `El canon mensual debe estar en un rango real de vivienda urbana entre ${formatCOP(
+          MIN_CANON_COP
+        )} y ${formatCOP(MAX_CANON_COP)}.`
+      );
       return;
     }
 
-    const comercialNum = valorComercial.trim()
-      ? Number(valorComercial.replace(/[^\d.]/g, ''))
-      : null;
+    const hasComercial = valorComercial.trim().length > 0;
+    const comercialNum = hasComercial ? parseDigitsInput(valorComercial) : null;
+
+    if (comercialNum !== null) {
+      if (comercialNum < MIN_COMERCIAL_COP || comercialNum > MAX_COMERCIAL_COP) {
+        setResult(null);
+        setError(
+          `El valor comercial estimado del inmueble debe estar entre ${formatCOP(
+            MIN_COMERCIAL_COP
+          )} y ${formatCOP(MAX_COMERCIAL_COP)} (o déjalo vacío si no deseas validarlo).`
+        );
+        return;
+      }
+      if (comercialNum <= canonNum * 12) {
+        setResult(null);
+        setError(
+          `El valor comercial (${formatCOP(
+            comercialNum
+          )}) no es coherente frente al canon mensual (${formatCOP(
+            canonNum
+          )}). Debe ser superior a 12 meses de arriendo (${formatCOP(canonNum * 12)}).`
+        );
+        return;
+      }
+    }
 
     setIsLoading(true);
     try {
       const res = await apiService.calculateIpc({
         canon_actual: canonNum,
         anio_reajuste: anioReajuste,
-        valor_comercial_inmueble: comercialNum && comercialNum > 0 ? comercialNum : null,
+        valor_comercial_inmueble: comercialNum,
         consultar_web: consultarWeb,
       });
       setResult(res);
     } catch (err: any) {
+      setResult(null);
       setError(err.message || 'Error calculando el reajuste legal.');
     } finally {
       setIsLoading(false);
@@ -95,14 +158,15 @@ export const IpcCalculatorModal: React.FC<IpcCalculatorModalProps> = ({
               <h2 id="ipc-modal-title" className="text-base font-bold text-slate-900">
                 Calculadora Legal de Arriendo (IPC)
               </h2>
-              <p className="text-[11px] text-slate-500">
+              <p className="text-[11px] text-slate-600">
                 Tope máximo permitido según Ley 820 de 2003 — Artículo 20
               </p>
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-cream-100"
+            className="p-1.5 text-slate-600 hover:text-slate-900 rounded-xl hover:bg-cream-100"
             aria-label="Cerrar calculadora IPC"
           >
             <X className="w-5 h-5" />
@@ -110,30 +174,34 @@ export const IpcCalculatorModal: React.FC<IpcCalculatorModalProps> = ({
         </div>
 
         <div className="p-5 overflow-y-auto space-y-4">
-          <form onSubmit={handleCalculate} className="space-y-3.5">
+          <form onSubmit={handleCalculate} noValidate className="space-y-3.5">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                <label htmlFor="ipc-canon" className="block text-xs font-semibold text-slate-700 mb-1">
                   Canon mensual actual (COP)
                 </label>
                 <input
-                  type="number"
-                  min={10000}
-                  step={1000}
+                  id="ipc-canon"
+                  type="text"
+                  inputMode="numeric"
                   required
                   value={canonActual}
-                  onChange={(e) => setCanonActual(e.target.value)}
-                  placeholder="Ej. 1500000"
+                  onChange={(e) => handleCanonChange(e.target.value)}
+                  placeholder="Ej. 1.500.000"
                   className="w-full px-3 py-2.5 bg-white border border-cream-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-600"
                 />
+                <span className="text-[10px] text-slate-600 mt-0.5 block">
+                  Rango válido: $100.000 – $200.000.000
+                </span>
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                <label htmlFor="ipc-anio" className="block text-xs font-semibold text-slate-700 mb-1">
                   Año del reajuste contractual
                 </label>
                 <select
+                  id="ipc-anio"
                   value={anioReajuste}
-                  onChange={(e) => setAnioReajuste(Number(e.target.value))}
+                  onChange={(e) => handleAnioChange(Number(e.target.value))}
                   className="w-full px-3 py-2.5 bg-white border border-cream-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-600"
                 >
                   <option value={2026}>2026 (usa IPC 2025)</option>
@@ -147,18 +215,21 @@ export const IpcCalculatorModal: React.FC<IpcCalculatorModalProps> = ({
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
+              <label htmlFor="ipc-comercial" className="block text-xs font-semibold text-slate-700 mb-1">
                 Valor comercial estimado del inmueble (opcional — valida tope 1% Art. 18)
               </label>
               <input
-                type="number"
-                min={0}
-                step={1000000}
+                id="ipc-comercial"
+                type="text"
+                inputMode="numeric"
                 value={valorComercial}
-                onChange={(e) => setValorComercial(e.target.value)}
-                placeholder="Ej. 250000000"
+                onChange={(e) => handleComercialChange(e.target.value)}
+                placeholder="Ej. 250.000.000 (opcional)"
                 className="w-full px-3 py-2 bg-white border border-cream-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-teal-600"
               />
+              <span className="text-[10px] text-slate-600 mt-0.5 block">
+                Si lo ingresas, mínimo $10.000.000 y mayor a 12 meses de canon
+              </span>
             </div>
 
             <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
@@ -173,8 +244,9 @@ export const IpcCalculatorModal: React.FC<IpcCalculatorModalProps> = ({
             </label>
 
             {error && (
-              <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs">
-                {error}
+              <div role="alert" className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
+                <span>{error}</span>
               </div>
             )}
 
@@ -201,11 +273,11 @@ export const IpcCalculatorModal: React.FC<IpcCalculatorModalProps> = ({
             <div className="space-y-3 pt-2 border-t border-cream-200 animate-fadeIn">
               <div className="grid grid-cols-3 gap-2.5">
                 <div className="p-3 rounded-xl bg-white border border-cream-200">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase">IPC {result.anio_ipc_base}</span>
+                  <span className="text-[10px] font-bold text-slate-600 uppercase">IPC {result.anio_ipc_base}</span>
                   <div className="text-lg font-extrabold text-teal-800 mt-0.5">{result.ipc_aplicado}%</div>
                 </div>
                 <div className="p-3 rounded-xl bg-white border border-cream-200">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase">Aumento máx.</span>
+                  <span className="text-[10px] font-bold text-slate-600 uppercase">Aumento máx.</span>
                   <div className="text-sm font-extrabold text-amber-800 mt-1">
                     +{formatCOP(result.incremento_maximo)}
                   </div>

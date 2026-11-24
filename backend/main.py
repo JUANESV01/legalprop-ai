@@ -9,12 +9,14 @@ Al iniciar ejecuta en orden:
    PostgreSQL (base común del Master y archivos privados de usuarios) tras reinicios en Render.
 """
 
+import asyncio
 import glob
 import hashlib
 import json
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -28,7 +30,7 @@ from app.core.security import (
     hash_security_answer,
 )
 from app.db.database import DB_ENGINE_NAME, SessionLocal, init_db
-from app.models.db_models import DocumentRecord, User
+from app.models.db_models import Conversation, DocumentRecord, User
 from app.services.rag_engine import rag_engine
 
 logging.basicConfig(
@@ -183,15 +185,29 @@ def preload_base_normativas() -> None:
                 existing = db.query(DocumentRecord).filter(DocumentRecord.id == doc_id).first()
                 existing_vectors = rag_engine.collection.get(where={"doc_id": doc_id})
                 has_vectors = bool(existing_vectors and existing_vectors.get("ids"))
+                has_gemini_cache = bool(
+                    existing
+                    and existing.content_hash == content_hash
+                    and existing.embeddings_json
+                    and existing.embedding_model == settings.GEMINI_EMBEDDING_MODEL
+                )
 
                 needs_ingest = (
                     existing is None
                     or existing.content_hash != content_hash
                     or not existing.extracted_content
                     or not has_vectors
+                    or (settings.is_gemini_configured and not has_gemini_cache)
                 )
 
                 if needs_ingest:
+                    cached_vecs = None
+                    if has_gemini_cache and existing and existing.embeddings_json:
+                        try:
+                            cached_vecs = json.loads(existing.embeddings_json)
+                        except Exception:
+                            cached_vecs = None
+
                     chunks = rag_engine.ingest_document(
                         doc_id=doc_id,
                         title=doc_title,
@@ -201,7 +217,9 @@ def preload_base_normativas() -> None:
                         owner_scope="public",
                         is_public=True,
                         filename=file_name,
+                        precomputed_embeddings=cached_vecs,
                     )
+                    emb_json, emb_model = rag_engine.export_last_embeddings_json()
                     if existing is None:
                         db.add(
                             DocumentRecord(
@@ -216,6 +234,8 @@ def preload_base_normativas() -> None:
                                 file_size_bytes=len(content.encode("utf-8")),
                                 content_preview=content[:600],
                                 extracted_content=content,
+                                embeddings_json=emb_json,
+                                embedding_model=emb_model,
                                 content_hash=content_hash,
                                 is_public=True,
                             )
@@ -229,6 +249,9 @@ def preload_base_normativas() -> None:
                         existing.content_preview = content[:600]
                         existing.extracted_content = content
                         existing.content_hash = content_hash
+                        if emb_json and emb_model:
+                            existing.embeddings_json = emb_json
+                            existing.embedding_model = emb_model
                     db.commit()
                     logger.info(f"Sincronizada norma base '{doc_title}': {chunks} fragmentos indexados.")
         finally:
@@ -240,8 +263,7 @@ def preload_base_normativas() -> None:
 def rehydrate_documents_from_db() -> None:
     """
     Re-hidrata automáticamente en ChromaDB cualquier documento persistido en PostgreSQL/SQLite
-    (base común subida por Master y archivos privados de usuarios) que falte tras un reinicio
-    en entornos con disco efímero como Render Free Tier.
+    usando los embeddings cacheados en BD (cero llamadas repetidas a Gemini en reinicios de Render).
     """
     db = SessionLocal()
     try:
@@ -255,8 +277,20 @@ def rehydrate_documents_from_db() -> None:
             if not doc.extracted_content:
                 continue
             existing = rag_engine.collection.get(where={"doc_id": doc.id})
-            if existing and existing.get("ids"):
+            has_vectors = bool(existing and existing.get("ids"))
+            has_gemini_cache = bool(
+                doc.embeddings_json and doc.embedding_model == settings.GEMINI_EMBEDDING_MODEL
+            )
+
+            if has_vectors and (not settings.is_gemini_configured or has_gemini_cache):
                 continue
+
+            cached_vecs = None
+            if has_gemini_cache and doc.embeddings_json:
+                try:
+                    cached_vecs = json.loads(doc.embeddings_json)
+                except Exception:
+                    cached_vecs = None
 
             owner_scope = (
                 "public"
@@ -276,18 +310,69 @@ def rehydrate_documents_from_db() -> None:
                 owner_scope=owner_scope,
                 is_public=doc.is_public,
                 filename=doc.filename,
+                precomputed_embeddings=cached_vecs,
             )
+            emb_json, emb_model = rag_engine.export_last_embeddings_json()
+            if emb_json and emb_model and not has_gemini_cache:
+                doc.embeddings_json = emb_json
+                doc.embedding_model = emb_model
             if chunks != doc.chunks_count:
                 doc.chunks_count = chunks
+            db.commit()
             restored += 1
 
         if restored:
-            db.commit()
             logger.info(f"Re-hidratados {restored} documentos desde {DB_ENGINE_NAME} hacia ChromaDB.")
     except Exception as e:
         logger.error(f"Error re-hidratando documentos desde BD: {e}", exc_info=True)
     finally:
         db.close()
+
+
+def purge_expired_guest_sessions(max_age_hours: int = 24) -> None:
+    """Limpia sesiones temporales de invitados abandonadas (>24h) en BD y ChromaDB."""
+    cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+    db = SessionLocal()
+    try:
+        old_docs = (
+            db.query(DocumentRecord)
+            .filter(
+                DocumentRecord.owner_id.is_(None),
+                DocumentRecord.is_public == False,  # noqa: E712
+                DocumentRecord.created_at < cutoff,
+            )
+            .all()
+        )
+        for d in old_docs:
+            rag_engine.delete_document(d.id)
+            db.delete(d)
+
+        old_convs = (
+            db.query(Conversation)
+            .filter(
+                Conversation.user_id.is_(None),
+                Conversation.updated_at < cutoff,
+            )
+            .all()
+        )
+        for c in old_convs:
+            db.delete(c)
+
+        if old_docs or old_convs:
+            db.commit()
+            logger.info(
+                f"Limpieza automática de invitados (>24h): {len(old_convs)} chats y {len(old_docs)} archivos temporales eliminados."
+            )
+    except Exception as e:
+        logger.debug(f"Limpieza de sesiones invitadas omitida: {e}")
+    finally:
+        db.close()
+
+
+def _sync_vector_store_on_startup() -> None:
+    purge_expired_guest_sessions()
+    preload_base_normativas()
+    rehydrate_documents_from_db()
 
 
 @asynccontextmanager
@@ -298,9 +383,15 @@ async def lifespan(app: FastAPI):
     )
     init_db()
     seed_master_user()
-    preload_base_normativas()
-    rehydrate_documents_from_db()
+    bg_task = None
+    if settings.ENVIRONMENT == "test":
+        _sync_vector_store_on_startup()
+    else:
+        # Sincronizar vectores en hilo de fondo para que Uvicorn abra $PORT en < 0.5s en Render
+        bg_task = asyncio.create_task(asyncio.to_thread(_sync_vector_store_on_startup))
     yield
+    if bg_task and not bg_task.done():
+        bg_task.cancel()
     logger.info("Cerrando LegalProp AI Backend...")
 
 
@@ -370,7 +461,7 @@ if os.path.isdir(FRONTEND_ASSETS_DIR):
     app.mount("/assets", StaticFiles(directory=FRONTEND_ASSETS_DIR), name="frontend-assets")
 
 
-@app.get("/", summary="Root / Frontend SPA")
+@app.api_route("/", methods=["GET", "HEAD"], summary="Root / Frontend SPA")
 def root():
     if os.path.isfile(FRONTEND_INDEX_HTML):
         return FileResponse(FRONTEND_INDEX_HTML)
@@ -384,7 +475,7 @@ def root():
     }
 
 
-@app.get("/robots.txt", include_in_schema=False)
+@app.api_route("/robots.txt", methods=["GET", "HEAD"], include_in_schema=False)
 def robots_txt():
     return PlainTextResponse(
         "User-agent: *\nAllow: /\nDisallow: /api/\n",
@@ -393,7 +484,7 @@ def robots_txt():
 
 
 if os.path.isfile(FRONTEND_INDEX_HTML):
-    @app.get("/{full_path:path}", include_in_schema=False)
+    @app.api_route("/{full_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
     def serve_spa_fallback(full_path: str):
         if full_path == "api" or full_path.startswith("api/") or full_path in ("docs", "redoc", "openapi.json"):
             raise HTTPException(status_code=404, detail="Not Found")

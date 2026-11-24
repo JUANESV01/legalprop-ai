@@ -84,6 +84,8 @@ def _ensure_incremental_columns() -> None:
         },
         "documents": {
             "extracted_content": "TEXT",
+            "embeddings_json": "TEXT",
+            "embedding_model": "VARCHAR(60)",
         },
         "audit_logs": {
             "status": "VARCHAR(20) NOT NULL DEFAULT 'SUCCESS'",

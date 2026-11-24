@@ -1,23 +1,42 @@
 from typing import List, Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from app.models.schemas.chat import CitationSchema
+
+MIN_CANON_COP = 100_000
+MAX_CANON_COP = 200_000_000
+MIN_COMERCIAL_COP = 10_000_000
+MAX_COMERCIAL_COP = 50_000_000_000
 
 
 class IPCCalcRequest(BaseModel):
-    canon_actual: float = Field(..., gt=0, description="Valor mensual actual del canon de arrendamiento en COP")
+    canon_actual: float = Field(
+        ...,
+        ge=MIN_CANON_COP,
+        le=MAX_CANON_COP,
+        description="Valor mensual actual del canon de arrendamiento en COP ($100.000 a $200.000.000)",
+    )
     anio_reajuste: int = Field(2026, ge=2021, le=2030, description="Año calendario en que se aplica el reajuste")
     ipc_personalizado: Optional[float] = Field(
         None,
         ge=0.0,
-        le=100.0,
-        description="Opcional: porcentaje de IPC manual si se desea simular"
+        le=50.0,
+        description="Opcional: porcentaje de IPC manual si se desea simular",
     )
     valor_comercial_inmueble: Optional[float] = Field(
         None,
-        gt=0,
-        description="Opcional: valor comercial estimado para verificar el tope legal del 1% (Ley 820 Art. 18 y 20)"
+        ge=MIN_COMERCIAL_COP,
+        le=MAX_COMERCIAL_COP,
+        description="Opcional: valor comercial estimado del inmueble en COP ($10.000.000 a $50.000.000.000)",
     )
     consultar_web: bool = Field(True, description="Intentar validar el IPC vigente en fuentes web oficiales")
+
+    @model_validator(mode="after")
+    def validate_coherent_values(self) -> "IPCCalcRequest":
+        if self.valor_comercial_inmueble is not None and self.valor_comercial_inmueble <= self.canon_actual * 12:
+            raise ValueError(
+                "El valor comercial del inmueble debe ser coherente y mayor a 12 meses del canon mensual actual."
+            )
+        return self
 
 
 class IPCCalcResponse(BaseModel):

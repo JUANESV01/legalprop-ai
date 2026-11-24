@@ -1,11 +1,13 @@
 import hashlib
+import json
 import logging
 import math
 import os
 import re
+import time
 import unicodedata
-from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from collections import OrderedDict, deque
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from google import genai
@@ -74,6 +76,7 @@ class GeminiHybridEmbeddingFunction:
         self._client: Optional[genai.Client] = None
         self._query_cache: OrderedDict[str, List[float]] = OrderedDict()
         self._cache_max = 256
+        self._minute_window: Deque[Tuple[float, int]] = deque()
         self.last_mode: str = "gemini-embedding-001" if settings.is_gemini_configured else "local_fallback"
 
     def name(self) -> str:
@@ -85,6 +88,12 @@ class GeminiHybridEmbeddingFunction:
 
     def get_config(self) -> Dict[str, Any]:
         return {"dim": self.DIM, "model": settings.GEMINI_EMBEDDING_MODEL}
+
+    def default_space(self) -> str:
+        return "cosine"
+
+    def supported_spaces(self) -> List[str]:
+        return ["cosine", "l2", "ip"]
 
     @property
     def client(self) -> Optional[genai.Client]:
@@ -130,23 +139,61 @@ class GeminiHybridEmbeddingFunction:
             vec = [v / norm_val for v in vec]
         return vec
 
+    def _wait_for_rate_budget(self, count: int) -> None:
+        """
+        Respeta preventivamente el límite gratuito de Gemini Embeddings (100 ítems/minuto),
+        evitando errores HTTP 429 y warnings naranjas en despliegues sobre Render.
+        """
+        window_secs = 62.0
+        safe_limit = 84
+        while True:
+            now = time.monotonic()
+            while self._minute_window and (now - self._minute_window[0][0]) >= window_secs:
+                self._minute_window.popleft()
+            used = sum(c for _, c in self._minute_window)
+            if used + count <= safe_limit or not self._minute_window:
+                self._minute_window.append((time.monotonic(), count))
+                return
+            oldest_ts = self._minute_window[0][0]
+            sleep_for = max(1.0, window_secs - (now - oldest_ts) + 0.5)
+            logger.info(
+                f"Control preventivo de cuota Gemini Embeddings ({used}/{safe_limit} por min): pausa de {sleep_for:.1f}s..."
+            )
+            time.sleep(sleep_for)
+
     def _embed_batch_gemini(self, texts: List[str], task_type: str) -> Optional[List[List[float]]]:
-        """Genera embeddings reales en lotes usando `gemini-embedding-001` (dim=768)."""
+        """Genera embeddings reales en lotes usando `gemini-embedding-001` (dim=768) con control de cuota."""
         if not self.client or not texts:
             return None
         try:
             all_vectors: List[List[float]] = []
-            batch_size = 96
+            batch_size = 42
             for i in range(0, len(texts), batch_size):
                 batch = [(t[:6000] if t and t.strip() else "documento") for t in texts[i:i + batch_size]]
-                res = self.client.models.embed_content(
-                    model=settings.GEMINI_EMBEDDING_MODEL,
-                    contents=batch,
-                    config=genai_types.EmbedContentConfig(
-                        output_dimensionality=self.DIM,
-                        task_type=task_type,
-                    ),
-                )
+                self._wait_for_rate_budget(len(batch))
+
+                res = None
+                for attempt in range(2):
+                    try:
+                        res = self.client.models.embed_content(
+                            model=settings.GEMINI_EMBEDDING_MODEL,
+                            contents=batch,
+                            config=genai_types.EmbedContentConfig(
+                                output_dimensionality=self.DIM,
+                                task_type=task_type,
+                            ),
+                        )
+                        break
+                    except Exception as api_err:
+                        err_s = str(api_err)
+                        if attempt == 0 and ("429" in err_s or "RESOURCE_EXHAUSTED" in err_s):
+                            m_delay = re.search(r"retry in (\d+(?:\.\d+)?)s", err_s, re.IGNORECASE)
+                            wait_s = min(32.0, float(m_delay.group(1)) + 1.5) if m_delay else 25.0
+                            logger.info(f"Cuota por minuto alcanzada en embeddings; reintentando en {wait_s:.1f}s...")
+                            time.sleep(wait_s)
+                            continue
+                        raise
+
                 embeddings = getattr(res, "embeddings", None) or []
                 if len(embeddings) != len(batch):
                     return None
@@ -157,7 +204,7 @@ class GeminiHybridEmbeddingFunction:
             self.last_mode = settings.GEMINI_EMBEDDING_MODEL
             return all_vectors
         except Exception as e:
-            logger.warning(f"Embeddings Gemini no disponibles ({e}); usando respaldo local determinista.")
+            logger.info(f"Embeddings remotos omitidos ({str(e)[:120]}); usando respaldo local determinista.")
             self.last_mode = "local_fallback"
             return None
 
@@ -216,6 +263,22 @@ class RAGEngine:
         self.embedding_fn = GeminiHybridEmbeddingFunction()
         self._client: Optional[chromadb.ClientAPI] = None
         self._collection = None
+        self._last_embeddings: Optional[List[List[float]]] = None
+        self._last_embedding_model: str = "local_fallback"
+
+    def export_last_embeddings_json(self) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Retorna los vectores de la última ingesta en JSON compacto únicamente cuando
+        provinieron del modelo real de Gemini (para cachearlos en PostgreSQL y evitar
+        consumir cuota de embeddings en futuros reinicios de Render).
+        """
+        if (
+            self._last_embeddings
+            and self._last_embedding_model == settings.GEMINI_EMBEDDING_MODEL
+        ):
+            compact = [[round(v, 5) for v in row] for row in self._last_embeddings]
+            return json.dumps(compact, separators=(",", ":")), self._last_embedding_model
+        return None, None
 
     @property
     def client(self) -> chromadb.ClientAPI:
@@ -250,9 +313,12 @@ class RAGEngine:
         owner_scope: str = "public",
         is_public: bool = True,
         filename: str = "",
+        precomputed_embeddings: Optional[List[List[float]]] = None,
     ) -> int:
-        """Segmenta el documento y lo persiste en ChromaDB con embeddings semánticos (RF08 / RNF04 / RNF10)."""
+        """Segmenta el documento y lo persiste en ChromaDB con embeddings semánticos o cacheados (RF08 / RNF04 / RNF10)."""
         self.delete_document(doc_id)
+        self._last_embeddings = None
+        self._last_embedding_model = "local_fallback"
 
         chunks = self.text_splitter.split_legal_text(
             text=content,
@@ -263,7 +329,7 @@ class RAGEngine:
         )
 
         if not chunks:
-            logger.warning(f"No se generaron fragmentos para el documento '{title}'.")
+            logger.info(f"Documento sin fragmentos indexables: '{title}'.")
             return 0
 
         ids = [c["chunk_id"] for c in chunks]
@@ -283,8 +349,21 @@ class RAGEngine:
             for idx, c in enumerate(chunks)
         ]
 
-        # Pre-calcular embeddings en lote para velocidad óptima (RNF10: 50 páginas en < 15 s)
-        embeddings = self.embedding_fn.embed_documents(documents)
+        if (
+            precomputed_embeddings
+            and len(precomputed_embeddings) == len(documents)
+            and len(precomputed_embeddings[0]) == self.embedding_fn.DIM
+        ):
+            embeddings = precomputed_embeddings
+            emb_label = f"{settings.GEMINI_EMBEDDING_MODEL}:cached"
+            self.embedding_fn.last_mode = settings.GEMINI_EMBEDDING_MODEL
+            self._last_embeddings = embeddings
+            self._last_embedding_model = settings.GEMINI_EMBEDDING_MODEL
+        else:
+            embeddings = self.embedding_fn.embed_documents(documents)
+            emb_label = self.embedding_fn.last_mode
+            self._last_embeddings = embeddings
+            self._last_embedding_model = self.embedding_fn.last_mode
 
         batch_size = 100
         for i in range(0, len(ids), batch_size):
@@ -296,7 +375,7 @@ class RAGEngine:
             )
 
         logger.info(
-            f"Ingestados {len(chunks)} fragmentos de '{title}' (ID: {doc_id}, scope: {owner_scope}, emb: {self.embedding_fn.last_mode})."
+            f"Ingestados {len(chunks)} fragmentos de '{title}' (ID: {doc_id}, scope: {owner_scope}, emb: {emb_label})."
         )
         return len(chunks)
 

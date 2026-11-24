@@ -6,16 +6,22 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     # Configuración General
     PROJECT_NAME: str = "LegalProp AI"
-    VERSION: str = "2.0.0"
-    DESCRIPTION: str = "Asistente conversacional normativo para arriendos y propiedad horizontal en Colombia"
+    VERSION: str = "2.1.0"
+    DESCRIPTION: str = "Asistente legal inteligente para propiedad horizontal, arrendamientos y contratos en Colombia"
     API_V1_STR: str = "/api/v1"
     ENVIRONMENT: str = "development"
     DEBUG: bool = True
 
-    # Gemini API
+    # Gemini API (Google GenAI)
     GEMINI_API_KEY: str = "tu_api_key_aqui"
-    GEMINI_MODEL: str = "gemini-3.5-flash-lite"
+    GEMINI_MODEL: str = "gemini-3.5-flash"
     GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
+    EMBEDDING_DIM: int = 768
+
+    # Grok AI (xAI API — OpenAI-compatible)
+    XAI_API_KEY: str = ""
+    XAI_MODEL: str = "grok-3-mini"
+    XAI_BASE_URL: str = "https://api.x.ai/v1"
 
     # Autenticación JWT y Seguridad (RF10 / RNF09)
     JWT_SECRET_KEY: str = "legalprop-ai-jwt-secret-key-change-in-production-2026"
@@ -63,6 +69,11 @@ class Settings(BaseSettings):
     def is_gemini_configured(self) -> bool:
         key = (self.GEMINI_API_KEY or "").strip()
         return bool(key) and not key.startswith("tu_") and not key.startswith("AIzaSyYour")
+
+    @property
+    def is_xai_configured(self) -> bool:
+        key = (self.XAI_API_KEY or "").strip()
+        return bool(key) and not key.startswith("tu_") and len(key) > 12
 
     model_config = SettingsConfigDict(
         env_file=".env",

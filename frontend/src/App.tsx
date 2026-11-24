@@ -17,6 +17,7 @@ import { WelcomeOnboardingPage } from './pages/WelcomeOnboardingPage';
 import { PrivacyPolicyPage } from './pages/PrivacyPolicyPage';
 import { useAppRoute } from './hooks/useAppRoute';
 import {
+  AIProvider,
   ChatMessage,
   BackendHealthResponse,
   UserProfile,
@@ -59,6 +60,17 @@ export const App: React.FC = () => {
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
   const [isCheckingConversation, setIsCheckingConversation] = useState(false);
+  const [aiProvider, setAiProvider] = useState<AIProvider>(() => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('legalprop_ai_provider') : null;
+    return saved === 'gemini' || saved === 'grok' || saved === 'auto' ? saved : 'auto';
+  });
+
+  const handleChangeAiProvider = (provider: AIProvider) => {
+    setAiProvider(provider);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('legalprop_ai_provider', provider);
+    }
+  };
 
   // Evita recargar la conversación que acabamos de crear por streaming
   const skipNextRouteLoadRef = useRef<string | null>(null);
@@ -200,7 +212,7 @@ export const App: React.FC = () => {
         setConversationTitle(undefined);
         setMessages([]);
         window.history.replaceState(null, '', '/chat/new');
-        sendMessageRef.current(pendingQ, true);
+        sendMessageRef.current(pendingQ, false);
         return;
       }
 
@@ -354,6 +366,7 @@ export const App: React.FC = () => {
           conversation_id: conversationId,
           document_ids: selectedDocIds.length > 0 ? selectedDocIds : undefined,
           use_web_fallback: useWebFallback,
+          ai_provider: aiProvider,
         },
         {
           onMetadata: (meta) => {
@@ -367,8 +380,26 @@ export const App: React.FC = () => {
                       citations: meta.citations || [],
                       disambiguation: meta.disambiguation || null,
                       metadata: {
+                        ...(m.metadata || {}),
                         user_documents_used: meta.user_documents_used,
                         web_fallback_used: meta.web_fallback_used,
+                      },
+                    }
+                  : m
+              )
+            );
+          },
+          onProvider: (prov) => {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantTempId
+                  ? {
+                      ...m,
+                      metadata: {
+                        ...(m.metadata || {}),
+                        provider_used: prov.provider_used,
+                        model_used: prov.model_used,
+                        fallback_used: prov.fallback_used,
                       },
                     }
                   : m
@@ -401,7 +432,19 @@ export const App: React.FC = () => {
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantTempId
-                  ? { ...m, id: info.message_id || m.id, isStreaming: false }
+                  ? {
+                      ...m,
+                      id: info.message_id || m.id,
+                      isStreaming: false,
+                      metadata: {
+                        ...(m.metadata || {}),
+                        provider_used: info.provider_used || m.metadata?.provider_used,
+                        model_used: info.model_used || m.metadata?.model_used,
+                        fallback_used: info.fallback_used ?? m.metadata?.fallback_used,
+                        ttft_ms: info.ttft_ms,
+                        total_ms: info.total_ms,
+                      },
+                    }
                   : m
               )
             );
@@ -489,6 +532,12 @@ export const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen bg-cream-100 text-slate-800 font-sans selection:bg-teal-100 selection:text-teal-900 overflow-hidden">
+      <a
+        href="#main-chat"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:px-3 focus:py-2 focus:bg-teal-800 focus:text-white focus:rounded-lg focus:text-xs focus:font-semibold"
+      >
+        Saltar al contenido principal
+      </a>
       <Header
         health={health}
         sidebarOpen={sidebarOpen}
@@ -532,11 +581,11 @@ export const App: React.FC = () => {
           onOpenMasterPanel={() => setIsMasterPanelOpen(true)}
         />
 
-        <main className="flex-1 flex flex-col min-w-0 bg-cream-100 relative">
+        <main id="main-chat" className="flex-1 flex flex-col min-w-0 bg-cream-100 relative">
           <ChatContainer
             messages={messages}
             userName={user?.full_name}
-            onSelectPrompt={(p) => handleSendMessage(p, true)}
+            onSelectPrompt={(p) => handleSendMessage(p, false)}
             onExportPdf={handleExportMessagePdf}
           />
 
@@ -550,6 +599,8 @@ export const App: React.FC = () => {
             userDocuments={userDocuments}
             selectedDocIds={selectedDocIds}
             onToggleDocId={handleToggleDocId}
+            aiProvider={aiProvider}
+            onChangeAiProvider={handleChangeAiProvider}
           />
         </main>
       </div>

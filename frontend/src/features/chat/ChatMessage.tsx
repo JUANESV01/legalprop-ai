@@ -179,9 +179,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
         {message.content ? (
           <MarkdownProse content={message.content} />
         ) : (
-          <div className="flex items-center gap-2 text-xs text-slate-500 py-1.5">
+          <div role="status" aria-live="polite" className="flex items-center gap-2 text-xs text-slate-600 py-1.5">
             <Loader2 className="w-3.5 h-3.5 animate-spin text-teal-700" />
-            <span>Consultando normativa...</span>
+            <span>Consultando normativa y documentos...</span>
           </div>
         )}
 
@@ -210,11 +210,11 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
 
         {/* Barra discreta de acciones y botón desplegable de fuentes */}
         {!message.isStreaming && message.content && (
-          <div className="flex flex-wrap items-center gap-2 pt-1 text-slate-500">
+          <div className="flex flex-wrap items-center gap-2 pt-1 text-slate-600">
             <button
               type="button"
               onClick={handleCopy}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-cream-200/70 text-[11px] hover:text-slate-900 transition-colors"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-cream-200/70 text-[11px] hover:text-slate-950 transition-colors"
               title="Copiar respuesta"
             >
               {copied ? <Check className="w-3.5 h-3.5 text-teal-700" /> : <Copy className="w-3.5 h-3.5" />}
@@ -226,7 +226,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                 type="button"
                 onClick={handlePdf}
                 disabled={exportingPdf}
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-cream-200/70 text-[11px] hover:text-slate-900 transition-colors"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-cream-200/70 text-[11px] hover:text-slate-950 transition-colors"
                 title="Descargar constancia en PDF"
               >
                 {exportingPdf ? (
@@ -236,6 +236,20 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                 )}
                 <span>PDF</span>
               </button>
+            )}
+
+            {message.metadata?.provider_used && (
+              <span
+                className="inline-flex items-center px-2 py-0.5 rounded-md bg-cream-200/70 text-slate-700 text-[10px] font-medium"
+                title={
+                  message.metadata?.fallback_used
+                    ? `Respaldo automático activado (${message.metadata?.model_used || message.metadata.provider_used})`
+                    : `Motor: ${message.metadata?.model_used || message.metadata.provider_used}`
+                }
+              >
+                {message.metadata.provider_used === 'grok' ? 'Grok AI' : 'Gemini'}
+                {message.metadata?.fallback_used ? ' (respaldo)' : ''}
+              </span>
             )}
 
             {citations.length > 0 && (

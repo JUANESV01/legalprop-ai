@@ -1,8 +1,9 @@
+import asyncio
 import html
 import logging
 import re
 import xml.etree.ElementTree as ET
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 from urllib.parse import quote_plus
 import httpx
 from app.core.config import settings
@@ -30,16 +31,16 @@ def should_trigger_web_search(query: str) -> bool:
 
 class WebSearchService:
     """
-    Servicio de búsqueda web real y gratuita para complementar el corpus estático con:
+    Servicio de búsqueda web paralela y de baja latencia (< 1.8s presupuesto) para
+    complementar el corpus estático sin penalizar el TTFT (RNF02):
     - Indicadores económicos oficiales (IPC del DANE, tasas de interés)
     - Jurisprudencia reciente (Corte Constitucional, Corte Suprema de Justicia)
-    - Normativas y noticias legales vigentes en Colombia.
+    - Normativas vigentes en Colombia.
 
-    Fuentes gratuitas sin API key: Bing RSS (Colombia) + Google News RSS (Colombia) + Wikipedia ES.
-    También soporta Serper / Tavily opcionalmente si se configuran en .env.
+    Fuentes gratuitas sin API key: Bing RSS (Colombia) + Google News RSS (Colombia) en paralelo.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.serper_api_key = settings.SERPER_API_KEY
         self.tavily_api_key = settings.TAVILY_API_KEY
 
@@ -49,8 +50,7 @@ class WebSearchService:
         text = html.unescape(text)
         return re.sub(r"\s+", " ", text).strip()
 
-    async def _search_bing_rss(self, search_query: str, num_results: int = 4) -> List[Dict[str, Any]]:
-        """Búsqueda web orgánica en vivo vía Bing RSS (gratuito, sin API key)."""
+    async def _search_bing_rss(self, search_query: str, num_results: int = 4, timeout: float = 1.6) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
         url = f"https://www.bing.com/search?q={quote_plus(search_query)}&format=rss&cc=CO&setlang=es-CO"
         headers = {
@@ -58,7 +58,7 @@ class WebSearchService:
             "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
         }
         try:
-            async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                 resp = await client.get(url, headers=headers)
                 if resp.status_code == 200 and "<item>" in resp.text:
                     root = ET.fromstring(resp.text)
@@ -74,19 +74,18 @@ class WebSearchService:
                                 "source": "Búsqueda Web (Bing Colombia)",
                             })
         except Exception as e:
-            logger.warning(f"Bing RSS search error: {e}")
+            logger.debug(f"Bing RSS timeout/error: {e}")
         return results
 
-    async def _search_google_news_rss(self, search_query: str, num_results: int = 3) -> List[Dict[str, Any]]:
-        """Búsqueda de actualidad oficial y jurisprudencia reciente vía Google News RSS Colombia (gratuito)."""
+    async def _search_google_news_rss(self, search_query: str, num_results: int = 3, timeout: float = 1.6) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
         url = (
             f"https://news.google.com/rss/search?q={quote_plus(search_query)}"
             f"&hl=es-419&gl=CO&ceid=CO:es-419"
         )
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; LegalPropAI/2.0)"}
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; LegalPropAI/2.1)"}
         try:
-            async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                 resp = await client.get(url, headers=headers)
                 if resp.status_code == 200 and "<item>" in resp.text:
                     root = ET.fromstring(resp.text)
@@ -106,41 +105,11 @@ class WebSearchService:
                                 "source": f"Web / {source_name}",
                             })
         except Exception as e:
-            logger.warning(f"Google News RSS search error: {e}")
-        return results
-
-    async def _search_wikipedia_es(self, search_query: str, num_results: int = 2) -> List[Dict[str, Any]]:
-        """Respaldo enciclopédico jurídico gratuito vía API oficial de Wikipedia en Español."""
-        results: List[Dict[str, Any]] = []
-        url = (
-            "https://es.wikipedia.org/w/api.php"
-            f"?action=query&list=search&srsearch={quote_plus(search_query)}"
-            f"&utf8=&format=json&srlimit={num_results}"
-        )
-        headers = {"User-Agent": "LegalPropAI/2.0 (contacto@legalprop.co)"}
-        try:
-            async with httpx.AsyncClient(timeout=6.0) as client:
-                resp = await client.get(url, headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    for item in data.get("query", {}).get("search", [])[:num_results]:
-                        title = item.get("title", "")
-                        snippet = self._clean_html(item.get("snippet", ""))
-                        page_url = f"https://es.wikipedia.org/wiki/{quote_plus(title.replace(' ', '_'))}"
-                        if title:
-                            results.append({
-                                "title": title,
-                                "link": page_url,
-                                "snippet": snippet,
-                                "source": "Web / Wikipedia ES",
-                            })
-        except Exception as e:
-            logger.warning(f"Wikipedia ES search error: {e}")
+            logger.debug(f"Google News RSS timeout/error: {e}")
         return results
 
     @staticmethod
     def _build_clean_search_query(raw_query: str) -> str:
-        """Limpia signos de interrogación y palabras vacías para obtener resultados web precisos."""
         stopwords = {
             "cual", "cuál", "cuales", "cuáles", "como", "cómo", "que", "qué", "quien", "quién",
             "donde", "dónde", "cuando", "cuándo", "fue", "es", "son", "esta", "está", "el", "la",
@@ -156,19 +125,23 @@ class WebSearchService:
             return f"{core} IPC DANE Colombia"
         if "corte" in ql or "sentencia" in ql or "tutela" in ql:
             return f"{core} Corte Constitucional Colombia"
-        return f"{core} Colombia Ley 820 Ley 675"
+        return f"{core} normativa Colombia"
 
-    async def search_legal_web(self, query: str, num_results: int = 4) -> List[Dict[str, Any]]:
+    async def search_legal_web(
+        self,
+        query: str,
+        num_results: int = 4,
+        max_wait_seconds: float = 1.8,
+    ) -> List[Dict[str, Any]]:
         """
-        Ejecuta búsqueda web real en tiempo real priorizando fuentes colombianas
-        (DANE, Corte Constitucional, Función Pública, prensa económica y jurídica).
+        Ejecuta búsqueda web paralela con límite estricto de tiempo (`max_wait_seconds`)
+        para garantizar un TTFT ágil en el streaming de chat (RNF02).
         """
         search_query = self._build_clean_search_query(query)
 
-        # 1. Serper API si está configurada
         if self.serper_api_key:
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
+                async with httpx.AsyncClient(timeout=max_wait_seconds) as client:
                     response = await client.post(
                         "https://google.serper.dev/search",
                         headers={"X-API-KEY": self.serper_api_key, "Content-Type": "application/json"},
@@ -188,12 +161,11 @@ class WebSearchService:
                         if out:
                             return out
             except Exception as e:
-                logger.warning(f"Error en búsqueda Serper: {e}")
+                logger.debug(f"Error en búsqueda Serper: {e}")
 
-        # 2. Tavily API si está configurada
         if self.tavily_api_key:
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
+                async with httpx.AsyncClient(timeout=max_wait_seconds) as client:
                     response = await client.post(
                         "https://api.tavily.com/search",
                         json={
@@ -216,29 +188,29 @@ class WebSearchService:
                         if out:
                             return out
             except Exception as e:
-                logger.warning(f"Error en búsqueda Tavily: {e}")
+                logger.debug(f"Error en búsqueda Tavily: {e}")
 
-        # 3. Motores gratuitos en vivo (Bing RSS + Google News RSS Colombia + Wikipedia ES)
+        # Ejecutar Bing RSS y Google News RSS en paralelo bajo el presupuesto estricto de latencia
+        try:
+            bing_hits, news_hits = await asyncio.wait_for(
+                asyncio.gather(
+                    self._search_bing_rss(search_query, num_results=num_results, timeout=max_wait_seconds),
+                    self._search_google_news_rss(search_query, num_results=3, timeout=max_wait_seconds),
+                    return_exceptions=True,
+                ),
+                timeout=max_wait_seconds + 0.15,
+            )
+        except asyncio.TimeoutError:
+            return []
+
         combined: List[Dict[str, Any]] = []
         seen_links = set()
-
-        bing_hits = await self._search_bing_rss(search_query, num_results=num_results)
-        for h in bing_hits:
-            if h["link"] not in seen_links:
-                seen_links.add(h["link"])
-                combined.append(h)
-
-        if len(combined) < num_results:
-            news_hits = await self._search_google_news_rss(search_query, num_results=3)
-            for h in news_hits:
-                if h["link"] not in seen_links:
-                    seen_links.add(h["link"])
-                    combined.append(h)
-                if len(combined) >= num_results:
-                    break
-
-        if not combined:
-            combined = await self._search_wikipedia_es(search_query, num_results=2)
+        for batch in (bing_hits, news_hits):
+            if isinstance(batch, list):
+                for h in batch:
+                    if h["link"] not in seen_links:
+                        seen_links.add(h["link"])
+                        combined.append(h)
 
         return combined[:num_results]
 

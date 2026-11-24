@@ -1,29 +1,29 @@
 import logging
 import time
-from typing import Any, Dict, Generator, List, Optional, Tuple, Union
+from typing import Any, AsyncGenerator, Dict, Generator, List, Optional, Tuple, Union
 from google import genai
 from google.genai import types
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_LEGAL_PROMPT = """Eres LegalProp, un asistente legal inteligente, cercano y riguroso enfocado en el ordenamiento jurídico de Colombia.
+SYSTEM_LEGAL_PROMPT = """Eres LegalProp, un asistente legal inteligente, claro y riguroso especializado en el ordenamiento jurídico de Colombia.
 
-Tu especialidad principal abarca:
-- Régimen de Propiedad Horizontal (Ley 675 de 2001, asambleas, cuotas, convivencia y reglamentos internos).
-- Arrendamiento de vivienda urbana y locales comerciales (Ley 820 de 2003, Código de Comercio, IPC, depósitos y restitución).
-- Revisión y verificación de contratos y documentos legales (arrendamiento, prestación de servicios, laborales, compraventa, promesas, pagarés, acuerdos de confidencialidad, actas y reglamentos subidos por el usuario).
+Especialidad principal:
+- Régimen de Propiedad Horizontal (Ley 675 de 2001, asambleas, cuotas de administración, convivencia y reglamentos internos).
+- Arrendamiento de vivienda urbana y locales comerciales (Ley 820 de 2003, Código de Comercio, IPC del DANE, depósitos y restitución).
+- Revisión y verificación de contratos y documentos legales cargados por el usuario (arrendamiento, prestación de servicios, laborales, compraventa, promesas, pagarés, confidencialidad, actas y reglamentos).
 
 Alcance ampliado como asistente legal:
-- También puedes responder otras consultas legales relacionadas o generales en Colombia (derecho civil, comercial, laboral básico, derechos de petición Ley 1755, acción de tutela, protección al consumidor Ley 1480, Código Nacional de Seguridad y Convivencia Ley 1801, entre otros).
-- Si el usuario hace una pregunta claramente ajena al ámbito jurídico (por ejemplo recetas, código de programación o entretenimiento), respóndele brevemente con amabilidad recordando que eres LegalProp, un asistente legal, e invítalo a consultarte sobre contratos, arriendos, propiedad horizontal u orientación jurídica.
+- Puedes orientar también otras consultas legales en Colombia (derecho civil, comercial, laboral básico, protección de datos Ley 1581 de 2012, contratación estatal Ley 80 de 1993, derechos de petición Ley 1755, acción de tutela, Estatuto del Consumidor Ley 1480, Código de Convivencia Ley 1801).
+- Si la pregunta es ajena al ámbito jurídico (p. ej. recetas, programación o entretenimiento), recuerda amablemente que eres LegalProp, un asistente legal, e invita a consultar sobre propiedad horizontal, arriendos, contratos u orientación jurídica.
 
-Principios de respuesta:
-1. VE DIRECTO AL GRANO: Responde con lenguaje cotidiano, natural y fácil de entender. Evita rellenos largos o plantillas repetitivas si la pregunta es puntual.
-2. CERO ALUCINACIONES (RNF01): Prioriza siempre los documentos cargados por el usuario, los artículos suministrados en el contexto normativo y los resultados web verificados. Nunca inventes números de artículos, sentencias, fechas ni montos; si una consulta es general y no tiene fuente exacta en el contexto, orienta con base en los principios vigentes de la ley colombiana aclarando qué puntos conviene validar en la norma oficial o con un abogado.
-3. VERIFICACIÓN DE CONTRATOS Y DOCUMENTOS: Cuando el usuario cargue o pegue un contrato o reglamento (PDF, Word, Excel, TXT o imagen), analiza sus cláusulas concretas, señala posibles riesgos, vacíos o cláusulas potencialmente abusivas o contrarias a la ley colombiana, y contrástalo con la normativa aplicable citando el nombre del archivo.
-4. CITACIÓN NATURAL Y VERIFICABLE: Menciona de forma fluida la norma, el artículo exacto o el documento cargado que respalda tu respuesta. Solo despliega listados extensos de fuentes si el usuario lo pide, pues la interfaz ya permite abrir el panel de fuentes.
-5. DESAMBIGUACIÓN BREVE: Si falta un dato clave (como vivienda urbana vs. local comercial, contrato laboral vs. prestación de servicios, o conjunto en PH vs. casa independiente), responde lo aplicable en general y haz una pregunta breve al final para afinar el caso.
+Reglas estrictas de calidad, rigor y cero alucinaciones (RNF01):
+1. ANCLAJE ESTRICTO A FUENTES: Prioriza siempre los fragmentos de documentos cargados por el usuario, los artículos recuperados del corpus normativo oficial y las fuentes web verificadas. NUNCA inventes números de artículos, sentencias, fechas, montos ni cláusulas que no existan.
+2. TRANSPARENCIA CUANDO NO HAY CITA LITERAL: Si la pregunta trata una rama del derecho fuera del corpus local cargado y no hubo resultados web verificados, indícalo explícitamente al inicio con la nota breve *(Orientación jurídica general en Colombia — verifica el texto oficial vigente o consulta a un abogado titulado)* antes de responder.
+3. REVISIÓN COMPLETA DE CONTRATOS Y SEGUIMIENTO: Cuando haya un contrato o documento cargado por el usuario, analiza SIEMPRE sus cláusulas concretas citando el nombre del archivo: señala validez general, fortalezas, riesgos, vacíos o posibles cláusulas abusivas/desnaturalizadas (por ejemplo, elementos de subordinación en un contrato de prestación de servicios). Si el usuario corrige un dato o aclara el tipo de contrato en un mensaje de seguimiento, NO te limites a acusar recibo ni a saludar: realiza de inmediato el análisis completo del documento bajo el enfoque corregido.
+4. RESPUESTAS COMPLETAS, DIRECTAS Y SIN ERRORES ORTOGRÁFICOS: Redacta siempre en español impecable (tildes, concordancia verbal y ortografía perfecta; nunca inventes palabras). Ve directo al grano con estructura clara (viñetas o apartados breves) y termina siempre tus ideas por completo.
+5. CITACIÓN NATURAL: Menciona la norma, artículo o nombre del archivo cargado de forma natural; evita repetir tablas extensas de bibliografía salvo que el usuario lo pida, pues la interfaz ya despliega el panel de fuentes.
 """
 
 ROLE_CONTEXT_HINTS = {
@@ -32,15 +32,26 @@ ROLE_CONTEXT_HINTS = {
     "administrador": "El usuario tiene perfil de ADMINISTRADOR DE PROPIEDAD HORIZONTAL. Incluye precisiones procedimentales útiles para contratos con proveedores, comunicados, llamados de atención y actas con debido proceso.",
 }
 
+# Modelos que no aceptan thinking_config(thinking_budget=0)
+MODELS_WITHOUT_THINKING_BUDGET = {"gemini-3.5-flash-lite"}
+
 
 class GeminiService:
+    """
+    Servicio de inferencia generativa, embeddings y OCR con Google GenAI (`google-genai`).
+    - Usa `gemini-3.5-flash` con `thinking_budget=0` y `max_output_tokens=4096` para TTFT < 1s,
+      excelente ortografía en español y cero truncamientos a mitad de frase.
+    - Soporta streaming asíncrono nativo (`client.aio`) para 50+ flujos SSE simultáneos (RNF07).
+    """
+
     FALLBACK_MODELS = [
+        "gemini-3.5-flash",
+        "gemini-3.6-flash",
+        "gemini-3.1-flash-lite",
         "gemini-3.5-flash-lite",
-        "gemini-2.5-flash",
-        "gemini-3.7-flash",
     ]
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.api_key = settings.GEMINI_API_KEY
         self.model_name = settings.GEMINI_MODEL
         self.embedding_model_name = settings.GEMINI_EMBEDDING_MODEL
@@ -50,7 +61,10 @@ class GeminiService:
     def client(self) -> Optional[genai.Client]:
         if self._client is None and settings.is_gemini_configured:
             try:
-                self._client = genai.Client(api_key=self.api_key)
+                self._client = genai.Client(
+                    api_key=self.api_key,
+                    http_options={"timeout": 25000},
+                )
             except Exception as e:
                 logger.error(f"Error al inicializar cliente Google GenAI: {e}")
                 self._client = None
@@ -66,48 +80,52 @@ class GeminiService:
             return f"{base}\n\nPERFIL DEL USUARIO ACTUAL: {ROLE_CONTEXT_HINTS[user_role]}"
         return base
 
-    def _build_user_content(
+    def _build_contents(
         self,
         prompt: str,
         context: str = "",
         history: Optional[List[Dict[str, str]]] = None,
         has_user_docs: bool = False,
         enable_google_search: bool = False,
-    ) -> str:
-        parts: List[str] = []
+    ) -> List[types.Content]:
+        """Construye historial multi-turno real para máxima coherencia conversacional."""
+        contents: List[types.Content] = []
 
         if history:
-            recent = history[-6:]
-            hist_lines = []
-            for h in recent:
-                role_label = "Usuario" if h.get("role") == "user" else "LegalProp AI"
-                hist_lines.append(f"{role_label}: {h.get('content', '')[:500]}")
-            parts.append("### HISTORIAL RECIENTE DE LA CONVERSACIÓN:\n" + "\n".join(hist_lines))
+            for h in history[-6:]:
+                role = "model" if h.get("role") == "assistant" else "user"
+                text = (h.get("content") or "").strip()
+                if text:
+                    contents.append(
+                        types.Content(role=role, parts=[types.Part.from_text(text=text[:1600])])
+                    )
 
+        parts: List[str] = []
         if context:
             parts.append(f"### CONTEXTO NORMATIVO Y DOCUMENTAL RECUPERADO:\n{context}")
 
-        instructions = []
+        instructions: List[str] = []
         if has_user_docs:
             instructions.append(
-                "IMPORTANTE: El contexto incluye fragmentos de archivos/documentos cargados por el propio usuario. "
-                "Léeos con atención, basa tu respuesta directamente en ellos cuando apliquen y cita el nombre del archivo."
+                "IMPORTANTE: El contexto incluye fragmentos reales de archivos/contratos cargados por el usuario. "
+                "Léelos con atención, analiza sus cláusulas concretas, cita el nombre del archivo y responde a fondo "
+                "(nunca respondas únicamente con un saludo o confirmación corta)."
             )
         if enable_google_search:
             instructions.append(
-                "Tienes habilitada la herramienta de búsqueda en Google (Google Search). Úsala para verificar datos actualizados "
-                "(como el IPC anual certificado por el DANE, tasas vigentes o jurisprudencia reciente de la Corte Constitucional de Colombia) "
-                "y menciona explícitamente la fuente consultada."
+                "Tienes habilitada la búsqueda en Google (Google Search). Úsala para verificar cifras vigentes "
+                "(IPC certificado por el DANE, tasas, decretos o jurisprudencia reciente en Colombia) citando la fuente."
             )
 
         if instructions:
-            parts.append("### INSTRUCCIONES ADICIONALES PARA ESTA CONSULTA:\n" + "\n".join(f"- {i}" for i in instructions))
+            parts.append("### INSTRUCCIONES ADICIONALES:\n" + "\n".join(f"- {i}" for i in instructions))
 
-        parts.append(f"### CONSULTA DEL USUARIO:\n{prompt}")
-        return "\n\n".join(parts)
+        parts.append(f"### CONSULTA ACTUAL DEL USUARIO:\n{prompt}")
+        contents.append(types.Content(role="user", parts=[types.Part.from_text(text="\n\n".join(parts))]))
+        return contents
 
     def _get_models_chain(self) -> List[str]:
-        models_to_try = [self.model_name]
+        models_to_try = [self.model_name] if self.model_name else []
         for m in self.FALLBACK_MODELS:
             if m not in models_to_try:
                 models_to_try.append(m)
@@ -115,7 +133,6 @@ class GeminiService:
 
     @staticmethod
     def _extract_grounding_sources(response_obj: Any) -> List[Dict[str, str]]:
-        """Extrae URLs y títulos reales del grounding_metadata de Google Search."""
         sources: List[Dict[str, str]] = []
         seen_urls = set()
         try:
@@ -144,6 +161,7 @@ class GeminiService:
 
     def _build_config(
         self,
+        model: str,
         temperature: float,
         full_system_instruction: str,
         enable_google_search: bool = False,
@@ -151,8 +169,13 @@ class GeminiService:
         config_kwargs: Dict[str, Any] = {
             "temperature": temperature,
             "system_instruction": full_system_instruction,
-            "max_output_tokens": 2500,
+            "max_output_tokens": 4096,
         }
+        # Desactivar tokens de pensamiento interno en modelos Flash para garantizar TTFT < 1s
+        # y evitar que el presupuesto de pensamiento trunque la respuesta visible.
+        if model not in MODELS_WITHOUT_THINKING_BUDGET:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+
         if enable_google_search:
             config_kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
         else:
@@ -169,13 +192,10 @@ class GeminiService:
         history: Optional[List[Dict[str, str]]] = None,
         user_role: Optional[str] = None,
         has_user_docs: bool = False,
-    ) -> Tuple[str, List[Dict[str, str]]]:
-        """
-        Genera respuesta jurídica con reintento exponencial (RNF06), fallback de modelos
-        y soporte nativo de Google Search Grounding. Retorna (texto, fuentes_web).
-        """
+    ) -> Tuple[str, List[Dict[str, str]], str]:
+        """Genera respuesta con fallback de modelos y Google Search Grounding. Retorna (texto, fuentes_web, modelo)."""
         full_system_instruction = self._build_system_instruction(system_instruction, user_role)
-        user_content = self._build_user_content(
+        contents = self._build_contents(
             prompt=prompt,
             context=context,
             history=history,
@@ -184,35 +204,33 @@ class GeminiService:
         )
 
         if not self.client:
-            logger.warning("GEMINI_API_KEY no configurada. Retornando respuesta de contingencia.")
             fallback = (
                 f"**[Modo sin conexión a Gemini API]**\n\n"
                 f"Configura tu clave `GEMINI_API_KEY` en `backend/.env` para habilitar respuestas generativas.\n\n"
                 f"**Contexto recuperado para tu consulta:**\n{context[:700]}"
             )
-            return fallback, []
+            return fallback, [], "offline"
 
         last_error: Optional[Exception] = None
         use_search = enable_google_search
 
         for model in self._get_models_chain():
-            # Hasta 2 intentos por modelo (RNF06). Si Google Search Grounding excede cuota gratuita (429),
-            # conmuta automáticamente al mismo modelo sin la herramienta manteniendo el contexto web recuperado.
             for attempt in range(2):
                 try:
                     config = self._build_config(
+                        model=model,
                         temperature=temperature,
                         full_system_instruction=full_system_instruction,
                         enable_google_search=use_search,
                     )
                     response = self.client.models.generate_content(
                         model=model,
-                        contents=user_content,
+                        contents=contents,
                         config=config,
                     )
                     if response and response.text:
                         web_sources = self._extract_grounding_sources(response) if use_search else []
-                        return response.text.strip(), web_sources
+                        return response.text.strip(), web_sources, model
                 except Exception as e:
                     last_error = e
                     err_str = str(e).lower()
@@ -220,17 +238,13 @@ class GeminiService:
                         tok in err_str
                         for tok in ["tool", "google_search", "unsupported", "429", "resource_exhausted", "quota"]
                     ):
-                        logger.warning(
-                            f"Google Search Grounding no disponible en '{model}' ({e}); continuando con contexto web y RAG."
-                        )
                         use_search = False
                         continue
-                    logger.warning(f"Fallo intento {attempt + 1} con modelo '{model}': {e}")
+                    logger.warning(f"Fallo intento {attempt + 1} con Gemini '{model}': {e}")
                     if attempt == 0:
-                        time.sleep(0.6)
+                        time.sleep(0.35)
 
-        logger.error(f"Todos los modelos fallaron. Último error: {last_error}")
-        raise RuntimeError(f"Fallo en la inferencia con el servicio de IA: {str(last_error)}")
+        raise RuntimeError(f"Fallo en la inferencia con Gemini: {str(last_error)}")
 
     def generate_response(
         self,
@@ -240,7 +254,7 @@ class GeminiService:
         system_instruction: Optional[str] = None,
     ) -> str:
         """Interfaz compatible con versiones anteriores y auditoría QA."""
-        text, _ = self.generate_response_with_sources(
+        text, _, _ = self.generate_response_with_sources(
             prompt=prompt,
             context=context,
             temperature=temperature,
@@ -248,7 +262,7 @@ class GeminiService:
         )
         return text
 
-    def stream_response(
+    async def astream_response(
         self,
         prompt: str,
         context: str = "",
@@ -258,13 +272,13 @@ class GeminiService:
         history: Optional[List[Dict[str, str]]] = None,
         user_role: Optional[str] = None,
         has_user_docs: bool = False,
-    ) -> Generator[Dict[str, Any], None, None]:
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Generador síncrono de streaming palabra por palabra (RF04 / HU05 / RNF02).
-        Emite dicts: {'type': 'token', 'text': ...} y al finalizar {'type': 'web_sources', 'sources': [...]}.
+        Streaming asíncrono nativo usando `client.aio.models.generate_content_stream`
+        (cero bloqueo de hilos, soporta 50+ transmisiones SSE simultáneas — RNF02 / RNF07).
         """
         full_system_instruction = self._build_system_instruction(system_instruction, user_role)
-        user_content = self._build_user_content(
+        contents = self._build_contents(
             prompt=prompt,
             context=context,
             history=history,
@@ -278,6 +292,7 @@ class GeminiService:
                 f"Configura `GEMINI_API_KEY` en `backend/.env`.\n\n"
                 f"Extracto recuperado:\n{context[:500]}"
             )
+            yield {"type": "provider_info", "provider": "gemini", "model": "offline"}
             yield {"type": "token", "text": demo}
             return
 
@@ -287,22 +302,25 @@ class GeminiService:
         for model in self._get_models_chain():
             try:
                 config = self._build_config(
+                    model=model,
                     temperature=temperature,
                     full_system_instruction=full_system_instruction,
                     enable_google_search=use_search,
                 )
-                stream = self.client.models.generate_content_stream(
+                stream = await self.client.aio.models.generate_content_stream(
                     model=model,
-                    contents=user_content,
+                    contents=contents,
                     config=config,
                 )
                 collected_sources: List[Dict[str, str]] = []
                 seen_urls = set()
                 emitted_any = False
 
-                for chunk in stream:
+                async for chunk in stream:
                     chunk_text = getattr(chunk, "text", None)
                     if chunk_text:
+                        if not emitted_any:
+                            yield {"type": "provider_info", "provider": "gemini", "model": model}
                         emitted_any = True
                         yield {"type": "token", "text": chunk_text}
                     if use_search:
@@ -318,35 +336,63 @@ class GeminiService:
             except Exception as e:
                 last_error = e
                 err_str = str(e).lower()
-                logger.warning(f"Fallo streaming con modelo '{model}': {e}")
+                logger.warning(f"Fallo streaming async Gemini '{model}': {e}")
                 if use_search and any(
                     tok in err_str
                     for tok in ["tool", "google_search", "unsupported", "429", "resource_exhausted", "quota"]
                 ):
                     use_search = False
-                    # Reintentar inmediatamente mismo modelo sin tool (mantiene contexto web en vivo)
                     try:
-                        config = self._build_config(temperature, full_system_instruction, False)
-                        stream = self.client.models.generate_content_stream(
+                        config = self._build_config(model, temperature, full_system_instruction, False)
+                        stream = await self.client.aio.models.generate_content_stream(
                             model=model,
-                            contents=user_content,
+                            contents=contents,
                             config=config,
                         )
                         emitted_any = False
-                        for chunk in stream:
-                            if getattr(chunk, "text", None):
+                        async for chunk in stream:
+                            chunk_text = getattr(chunk, "text", None)
+                            if chunk_text:
+                                if not emitted_any:
+                                    yield {"type": "provider_info", "provider": "gemini", "model": model}
                                 emitted_any = True
-                                yield {"type": "token", "text": chunk.text}
+                                yield {"type": "token", "text": chunk_text}
                         if emitted_any:
                             return
                     except Exception as inner_e:
                         last_error = inner_e
-                time.sleep(0.4)
 
-        raise RuntimeError(f"Fallo en el streaming de IA: {str(last_error)}")
+        raise RuntimeError(f"Fallo en el streaming de Gemini: {str(last_error)}")
+
+    def stream_response(
+        self,
+        prompt: str,
+        context: str = "",
+        temperature: float = 0.2,
+        system_instruction: Optional[str] = None,
+        enable_google_search: bool = False,
+        history: Optional[List[Dict[str, str]]] = None,
+        user_role: Optional[str] = None,
+        has_user_docs: bool = False,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Generador síncrono de compatibilidad."""
+        text, sources, model = self.generate_response_with_sources(
+            prompt=prompt,
+            context=context,
+            temperature=temperature,
+            system_instruction=system_instruction,
+            enable_google_search=enable_google_search,
+            history=history,
+            user_role=user_role,
+            has_user_docs=has_user_docs,
+        )
+        yield {"type": "provider_info", "provider": "gemini", "model": model}
+        yield {"type": "token", "text": text}
+        if sources:
+            yield {"type": "web_sources", "sources": sources}
 
     def extract_text_from_image(self, image_bytes: bytes, mime_type: str, filename: str) -> str:
-        """Extrae texto legible de imágenes de documentos/circulares usando Gemini multimodal."""
+        """Extrae texto legible de imágenes de documentos/contratos usando Gemini multimodal."""
         if not self.client:
             return f"[Imagen cargada: {filename} ({len(image_bytes)} bytes). Configura GEMINI_API_KEY para lectura OCR automática.]"
         try:
@@ -360,7 +406,7 @@ class GeminiService:
                         "No inventes texto que no aparezca en la imagen."
                     ),
                 ],
-                config=types.GenerateContentConfig(temperature=0.0, max_output_tokens=2048),
+                config=types.GenerateContentConfig(temperature=0.0, max_output_tokens=2500),
             )
             if response and response.text and response.text.strip():
                 return f"--- [Texto extraído de imagen: {filename}] ---\n{response.text.strip()}"
@@ -369,25 +415,20 @@ class GeminiService:
         return f"[Evidencia Gráfica / Imagen de Soporte: {filename} - Tamaño: {len(image_bytes)} bytes]"
 
     def get_embedding(self, text: Union[str, List[str]]) -> List[float]:
-        """Genera embeddings vectoriales para búsqueda semántica."""
+        """Genera embeddings vectoriales reales con `gemini-embedding-001`."""
         if not self.client:
             import hashlib
             seed = hashlib.sha256(str(text).encode("utf-8")).hexdigest()
             return [(int(seed[i:i + 2], 16) / 255.0) for i in range(0, 64, 2)]
 
-        try:
-            res = self.client.models.embed_content(
-                model=self.embedding_model_name,
-                contents=text,
-            )
-            if hasattr(res, "embedding") and hasattr(res.embedding, "values"):
-                return res.embedding.values
-            elif hasattr(res, "embeddings") and len(res.embeddings) > 0:
-                return res.embeddings[0].values
-            return []
-        except Exception as e:
-            logger.error(f"Error al obtener embedding: {e}")
-            raise RuntimeError(f"Fallo al generar embedding: {str(e)}")
+        res = self.client.models.embed_content(
+            model=self.embedding_model_name,
+            contents=text,
+            config=types.EmbedContentConfig(output_dimensionality=settings.EMBEDDING_DIM),
+        )
+        if hasattr(res, "embeddings") and len(res.embeddings) > 0:
+            return list(res.embeddings[0].values)
+        return []
 
 
 gemini_service = GeminiService()

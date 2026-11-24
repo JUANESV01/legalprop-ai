@@ -1,5 +1,6 @@
 export type UserRole = 'inquilino' | 'propietario' | 'administrador' | 'master';
 export type RecoveryMethod = 'questions' | 'recovery_code';
+export type AIProvider = 'auto' | 'gemini' | 'grok';
 
 export interface SecurityQuestionItem {
   question: string;
@@ -77,6 +78,7 @@ export interface ChatQueryRequest {
   document_ids?: string[];
   temperature?: number;
   use_web_fallback?: boolean;
+  ai_provider?: AIProvider;
 }
 
 export interface ChatQueryResponse {
@@ -163,6 +165,7 @@ export interface IPCCalcResponse {
   ipc_aplicado: number;
   fuente_ipc: string;
   fuente_url?: string | null;
+  verificado_en_vivo?: boolean;
   incremento_maximo: number;
   nuevo_canon_maximo: number;
   cumple_tope_valor_comercial?: boolean | null;
@@ -207,9 +210,13 @@ export interface BackendHealthResponse {
   database_engine?: string;
   gemini_api_configured: boolean;
   gemini_model: string;
+  xai_api_configured?: boolean;
+  xai_model?: string;
   vector_store: {
     collection_name: string;
     total_chunks: number;
+    embedding_model?: string;
+    embedding_dimensions?: number;
     status: string;
   };
 }

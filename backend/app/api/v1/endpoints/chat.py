@@ -9,8 +9,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from app.core.security import get_guest_session_id, get_optional_user, resolve_owner_scope
-from app.db.database import get_db, SessionLocal
+from app.core.security import (
+    get_guest_session_id,
+    get_optional_user,
+    resolve_optional_user_detached,
+    resolve_owner_scope,
+)
+from app.db.database import SessionLocal, get_db
 from app.models.db_models import AuditLog, Conversation, Message, User
 from app.models.schemas.chat import (
     ChatQueryRequest,
@@ -19,7 +24,7 @@ from app.models.schemas.chat import (
     DisambiguationInfo,
     DisambiguationOption,
 )
-from app.services.gemini_service import gemini_service
+from app.services.ai_orchestrator import ai_orchestrator
 from app.services.ipc_service import ipc_service
 from app.services.rag_engine import rag_engine
 from app.services.web_search import should_trigger_web_search, web_search_service
@@ -70,22 +75,15 @@ def _evaluate_disambiguation(
     explicit_category: Optional[str],
     has_user_docs: bool,
 ) -> Optional[DisambiguationInfo]:
-    """
-    Lógica de desambiguación guiada (HU10 / RF09):
-    Detecta preguntas legales ambiguas donde distinguir el tipo de inmueble o régimen
-    cambia la normativa aplicable (Ley 820 vivienda vs Código de Comercio local comercial,
-    o Ley 675 propiedad horizontal vs casa independiente).
-    """
+    """Desambiguación guiada (HU10 / RF09) sin interrumpir revisiones de documentos adjuntos."""
     ql = query.lower().strip()
     words = ql.split()
     top_score = retrieved_chunks[0]["similarity_score"] if retrieved_chunks else 0.0
 
-    # No interrumpir si ya especificó el tipo de inmueble o está preguntando por un archivo propio
-    if has_user_docs and any(k in ql for k in ["archivo", "documento", "pdf", "docx", "subi", "subí", "reglamento", "contrato"]):
+    if has_user_docs:
         return None
 
-    # Caso 1: Preguntas de arriendo donde no se aclara si es vivienda urbana o local comercial
-    mentions_lease = any(k in ql for k in ["arriendo", "canon", "sacar", "desalojo", "contrato", "subir", "terminar"])
+    mentions_lease = any(k in ql for k in ["arriendo", "canon", "sacar", "desalojo", "subir", "terminar"])
     specifies_lease_type = any(k in ql for k in ["vivienda", "apartamento", "casa", "local", "comercial", "bodega", "oficina", "ley 820"])
     if mentions_lease and not specifies_lease_type and len(words) < 16:
         return DisambiguationInfo(
@@ -106,7 +104,6 @@ def _evaluate_disambiguation(
             ],
         )
 
-    # Caso 2: Preguntas de convivencia/vecinos sin aclarar si es propiedad horizontal o casa independiente
     mentions_convivencia = any(k in ql for k in ["vecino", "ruido", "mascota", "perro", "multa", "parqueadero", "basura", "fiesta"])
     specifies_ph = any(k in ql for k in ["conjunto", "edificio", "propiedad horizontal", "copropiedad", "administracion", "administración", "ley 675", "casa independiente"])
     if mentions_convivencia and not specifies_ph and explicit_category != "propiedad_horizontal" and len(words) < 16:
@@ -128,7 +125,6 @@ def _evaluate_disambiguation(
             ],
         )
 
-    # Caso 3: Similitud muy baja y consulta muy corta
     if top_score < 0.30 and len(words) < 6:
         return DisambiguationInfo(
             needed=True,
@@ -167,7 +163,6 @@ def _get_or_create_conversation(
     if conversation_id:
         conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
         if conv:
-            # Validar pertenencia
             if current_user and conv.user_id != current_user.id:
                 conv = None
             elif not current_user and conv.user_id is not None:
@@ -186,7 +181,6 @@ def _get_or_create_conversation(
         db.refresh(conv)
         return conv, []
 
-    # Si aún tenía título por defecto, renombrar automáticamente según temática (RF07)
     if conv.title in ("Nueva consulta normativa", "Consulta Normativa", ""):
         conv.title = _auto_title_from_query(query)
     if not conv.category or conv.category == "general":
@@ -194,7 +188,6 @@ def _get_or_create_conversation(
     conv.updated_at = datetime.utcnow()
     db.commit()
 
-    # Recuperar últimos mensajes para contexto conversacional
     past_msgs = (
         db.query(Message)
         .filter(Message.conversation_id == conv.id)
@@ -225,7 +218,6 @@ async def _prepare_chat_context(
         guest_session_id=guest_session_id,
     )
 
-    # Guardar mensaje del usuario inmediatamente
     user_msg = Message(
         conversation_id=conv.id,
         role="user",
@@ -234,36 +226,50 @@ async def _prepare_chat_context(
     db.add(user_msg)
     db.commit()
 
-    # 1. Recuperación RAG con aislamiento por usuario (RNF04) y priorización de archivos subidos
-    retrieved_chunks = rag_engine.retrieve_context(
-        query=request.query,
-        category=request.category,
-        top_k=6,
-        owner_scope=owner_scope,
-        document_ids=request.document_ids,
+    # Decidir antes si corremos búsqueda web en paralelo con RAG para no duplicar latencia (RNF02 < 2s)
+    has_attached_ids = bool(request.document_ids)
+    keyword_web = should_trigger_web_search(request.query)
+    eager_web = bool(request.use_web_fallback or (keyword_web and not has_attached_ids))
+
+    rag_task = asyncio.to_thread(
+        rag_engine.retrieve_context,
+        request.query,
+        request.category,
+        6,
+        owner_scope,
+        request.document_ids,
     )
 
-    has_user_docs = any(not c.get("is_public", True) for c in retrieved_chunks)
-
-    # 2. Búsqueda web en tiempo real (manual, automática por palabras clave o baja cobertura local en temas legales generales)
-    top_local_score = retrieved_chunks[0].get("similarity_score", 0.0) if retrieved_chunks else 0.0
-    auto_web = should_trigger_web_search(request.query) or (not has_user_docs and top_local_score < 0.34)
-    web_enabled = bool(request.use_web_fallback or auto_web)
     web_results: List[Dict[str, Any]] = []
+    if eager_web:
+        retrieved_chunks, web_results = await asyncio.gather(
+            rag_task,
+            web_search_service.search_legal_web(request.query, num_results=4, max_wait_seconds=1.1),
+        )
+    else:
+        retrieved_chunks = await rag_task
+
+    has_user_docs = any(not c.get("is_public", True) for c in retrieved_chunks) or has_attached_ids
+    top_local_score = retrieved_chunks[0].get("similarity_score", 0.0) if retrieved_chunks else 0.0
+
+    # Solo hacer fallback web adicional si NO hay documentos adjuntos y la cobertura local es muy baja
+    web_enabled = eager_web
+    if not eager_web and not has_user_docs and top_local_score < 0.34:
+        web_enabled = True
+        web_results = await web_search_service.search_legal_web(
+            request.query, num_results=3, max_wait_seconds=1.0
+        )
+
     web_context_parts: List[str] = []
-
-    if web_enabled:
-        web_results = await web_search_service.search_legal_web(request.query, num_results=4)
-        if web_results:
-            web_context_parts.append(
-                "### FUENTES WEB Y JURISPRUDENCIA CONSULTADAS EN TIEMPO REAL:\n"
-                + "\n".join(
-                    f"- {item['title']}: {item['snippet']} (URL: {item['link']})"
-                    for item in web_results
-                )
+    if web_results:
+        web_context_parts.append(
+            "### FUENTES WEB Y JURISPRUDENCIA CONSULTADAS EN TIEMPO REAL:\n"
+            + "\n".join(
+                f"- {item['title']}: {item['snippet']} (URL: {item['link']})"
+                for item in web_results
             )
+        )
 
-    # 3. Enriquecimiento oficial DANE si la pregunta trata sobre IPC / aumento de canon (RF01 / HU01)
     ql = request.query.lower()
     if any(k in ql for k in ["ipc", "incremento", "reajuste", "subir el arriendo", "aumento de arriendo", "aumento del arriendo"]):
         rates = ipc_service.get_known_rates()
@@ -276,7 +282,6 @@ async def _prepare_chat_context(
             + "\n".join(ipc_lines)
         )
 
-    # 4. Ensamblar contexto y citas estructuradas
     citations: List[CitationSchema] = []
     context_parts: List[str] = []
 
@@ -327,12 +332,16 @@ async def _prepare_chat_context(
         has_user_docs=has_user_docs,
     )
 
+    # Activar Google Search Grounding solo si el usuario lo pidió o la pregunta pide datos en vivo sin archivo adjunto
+    enable_google_search = bool(web_enabled and not has_attached_ids)
+
     return {
         "conversation": conv,
         "history": history,
         "retrieved_chunks": retrieved_chunks,
         "has_user_docs": has_user_docs,
         "web_enabled": web_enabled,
+        "enable_google_search": enable_google_search,
         "web_results": web_results,
         "citations": citations,
         "full_context": full_context,
@@ -367,7 +376,7 @@ def _merge_google_grounding_citations(
 @router.post(
     "/query",
     response_model=ChatQueryResponse,
-    summary="Consulta Jurídica Normativa con Pipeline RAG + Web Grounding",
+    summary="Consulta Jurídica Normativa con Pipeline RAG + Multi-IA (Gemini / Grok)",
     description="Recupera artículos normativos y documentos del usuario en ChromaDB, ejecuta grounding web si aplica y sintetiza la respuesta jurídica.",
 )
 async def query_chat(
@@ -388,21 +397,18 @@ async def query_chat(
     citations: List[CitationSchema] = prep["citations"]
     retrieved_chunks = prep["retrieved_chunks"]
 
-    # Inferencia en hilo separado para no bloquear el event loop de FastAPI
-    loop = asyncio.get_running_loop()
     google_sources: List[Dict[str, str]] = []
+    provider_meta: Dict[str, Any] = {"provider_requested": request.ai_provider, "provider_used": "gemini"}
     try:
-        answer_text, google_sources = await loop.run_in_executor(
-            None,
-            lambda: gemini_service.generate_response_with_sources(
-                prompt=request.query,
-                context=prep["full_context"],
-                temperature=request.temperature,
-                enable_google_search=prep["web_enabled"],
-                history=prep["history"],
-                user_role=current_user.role if current_user else None,
-                has_user_docs=prep["has_user_docs"],
-            ),
+        answer_text, google_sources, provider_meta = await ai_orchestrator.generate_response_with_sources(
+            prompt=request.query,
+            context=prep["full_context"],
+            temperature=request.temperature,
+            enable_google_search=prep["enable_google_search"],
+            history=prep["history"],
+            user_role=current_user.role if current_user else None,
+            has_user_docs=prep["has_user_docs"],
+            ai_provider=request.ai_provider,
         )
     except Exception as e:
         logger.error(f"Error en inferencia de chat: {e}", exc_info=True)
@@ -429,6 +435,7 @@ async def query_chat(
         "google_grounding_count": len(google_sources),
         "elapsed_ms": elapsed_ms,
         "disambiguation": prep["disambiguation"].model_dump() if prep["disambiguation"] else None,
+        **provider_meta,
     }
 
     assistant_msg = Message(
@@ -441,7 +448,7 @@ async def query_chat(
     db.add(assistant_msg)
     conv.updated_at = datetime.utcnow()
     if current_user:
-        db.add(AuditLog(user_id=current_user.id, action="CHAT_QUERY", details=f"Conv {conv.id[:8]} | {elapsed_ms}ms"))
+        db.add(AuditLog(user_id=current_user.id, action="CHAT_QUERY", details=f"Conv {conv.id[:8]} | {provider_meta.get('provider_used')} | {elapsed_ms}ms"))
     db.commit()
     db.refresh(assistant_msg)
 
@@ -459,14 +466,13 @@ async def query_chat(
 
 @router.post(
     "/stream",
-    summary="Consulta Jurídica en Tiempo Real vía Server-Sent Events (SSE) (RF04 / HU05 / RNF02 / RNF07)",
-    description="Emite los tokens de respuesta en streaming continuo asíncrono junto con citas normativas, documentos del usuario y fuentes web.",
+    summary="Consulta Jurídica en Tiempo Real vía SSE Asíncrono (RF04 / HU05 / RNF02 / RNF07)",
+    description="Streaming 100% asíncrono sin bloqueo de hilos, compatible con 50+ flujos SSE simultáneos y selección Gemini/Grok/Auto.",
 )
 async def stream_chat(
     request: ChatQueryRequest,
-    current_user: Optional[User] = Depends(get_optional_user),
+    user_info: Optional[Dict[str, str]] = Depends(resolve_optional_user_detached),
     guest_session_id: Optional[str] = Depends(get_guest_session_id),
-    db: Session = Depends(get_db),
 ):
     if not request.query.strip():
         raise HTTPException(
@@ -475,19 +481,31 @@ async def stream_chat(
         )
 
     t0 = time.perf_counter()
-    prep = await _prepare_chat_context(request, current_user, guest_session_id, db)
-    conv_id = prep["conversation"].id
-    conv_title = prep["conversation"].title
+
+    # Sesión corta de BD cerrada ANTES de iniciar el stream SSE (0 conexiones retenidas — RNF07)
+    class _DetachedUserProxy:
+        def __init__(self, info: Dict[str, str]):
+            self.id = info["id"]
+            self.role = info["role"]
+
+    user_proxy: Optional[Any] = _DetachedUserProxy(user_info) if user_info else None
+    prep_db = SessionLocal()
+    try:
+        prep = await _prepare_chat_context(request, user_proxy, guest_session_id, prep_db)
+        conv_id = prep["conversation"].id
+        conv_title = prep["conversation"].title
+    finally:
+        prep_db.close()
+
     citations: List[CitationSchema] = prep["citations"]
     retrieved_chunks = prep["retrieved_chunks"]
-    user_role = current_user.role if current_user else None
-    user_id = current_user.id if current_user else None
+    user_role = user_info["role"] if user_info else None
+    user_id = user_info["id"] if user_info else None
 
     def _sse(event_name: str, data_obj: Any) -> str:
         return f"event: {event_name}\ndata: {json.dumps(data_obj, ensure_ascii=False)}\n\n"
 
     async def event_generator():
-        # 1. Enviar metadatos iniciales y citas RAG inmediatamente
         yield _sse(
             "metadata",
             {
@@ -497,115 +515,118 @@ async def stream_chat(
                 "citations": [c.model_dump() for c in citations],
                 "user_documents_used": prep["has_user_docs"],
                 "web_fallback_used": prep["web_enabled"],
+                "ai_provider_requested": request.ai_provider,
                 "disambiguation": prep["disambiguation"].model_dump() if prep["disambiguation"] else None,
             },
         )
 
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue = asyncio.Queue()
-
-        def _producer():
-            try:
-                for evt in gemini_service.stream_response(
-                    prompt=request.query,
-                    context=prep["full_context"],
-                    temperature=request.temperature,
-                    enable_google_search=prep["web_enabled"],
-                    history=prep["history"],
-                    user_role=user_role,
-                    has_user_docs=prep["has_user_docs"],
-                ):
-                    loop.call_soon_threadsafe(queue.put_nowait, evt)
-            except Exception as exc:
-                loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "error": str(exc)})
-            finally:
-                loop.call_soon_threadsafe(queue.put_nowait, {"type": "end"})
-
-        # Lanzar productor en thread pool para cero bloqueo del event loop (RNF07)
-        producer_future = loop.run_in_executor(None, _producer)
-
         accumulated_text_parts: List[str] = []
         google_sources: List[Dict[str, str]] = []
+        provider_info: Dict[str, Any] = {
+            "provider_requested": request.ai_provider,
+            "provider_used": request.ai_provider,
+            "model_used": "",
+            "fallback_used": False,
+        }
         ttft_ms: Optional[int] = None
 
-        while True:
-            item = await queue.get()
-            evt_type = item.get("type")
+        try:
+            async for item in ai_orchestrator.astream_response(
+                prompt=request.query,
+                context=prep["full_context"],
+                temperature=request.temperature,
+                enable_google_search=prep["enable_google_search"],
+                history=prep["history"],
+                user_role=user_role,
+                has_user_docs=prep["has_user_docs"],
+                ai_provider=request.ai_provider,
+            ):
+                evt_type = item.get("type")
 
-            if evt_type == "token":
+                if evt_type == "provider_info":
+                    provider_info = {
+                        "provider_requested": item.get("provider_requested", request.ai_provider),
+                        "provider_used": item.get("provider", "gemini"),
+                        "model_used": item.get("model", ""),
+                        "fallback_used": bool(item.get("fallback_used", False)),
+                        "fallback_reason": item.get("fallback_reason"),
+                    }
+                    yield _sse("provider", provider_info)
+
+                elif evt_type == "token":
+                    if ttft_ms is None:
+                        ttft_ms = int((time.perf_counter() - t0) * 1000)
+                    txt = item.get("text", "")
+                    if txt:
+                        accumulated_text_parts.append(txt)
+                        yield _sse("token", {"text": txt})
+
+                elif evt_type == "web_sources":
+                    google_sources = item.get("sources", [])
+                    updated = _merge_google_grounding_citations(citations, google_sources)
+                    yield _sse("web_sources", {"citations": [c.model_dump() for c in updated]})
+
+        except Exception as exc:
+            err_msg = str(exc)
+            logger.error(f"Error en stream SSE: {err_msg}")
+            if not accumulated_text_parts and retrieved_chunks:
                 if ttft_ms is None:
                     ttft_ms = int((time.perf_counter() - t0) * 1000)
-                txt = item.get("text", "")
-                if txt:
-                    accumulated_text_parts.append(txt)
-                    yield _sse("token", {"text": txt})
-
-            elif evt_type == "web_sources":
-                google_sources = item.get("sources", [])
-                updated = _merge_google_grounding_citations(citations, google_sources)
-                yield _sse("web_sources", {"citations": [c.model_dump() for c in updated]})
-
-            elif evt_type == "error":
-                err_msg = item.get("error", "Error de generación")
-                logger.error(f"Error en stream SSE: {err_msg}")
-                if not accumulated_text_parts and retrieved_chunks:
-                    top_chunk = retrieved_chunks[0]
-                    fallback_txt = (
-                        f"Conforme a la fuente disponible (**{top_chunk.get('norma', 'Norma')} - {top_chunk.get('article', '')}**):\n\n"
-                        f"{top_chunk.get('content', '')}\n\n"
-                        f"*(Extracto directo de contingencia ante intermitencia temporal del modelo generativo)*."
-                    )
-                    accumulated_text_parts.append(fallback_txt)
-                    yield _sse("token", {"text": fallback_txt})
-                elif not accumulated_text_parts:
-                    yield _sse("error", {"detail": err_msg})
-
-            elif evt_type == "end":
-                break
-
-        await producer_future
+                top_chunk = retrieved_chunks[0]
+                fallback_txt = (
+                    f"Conforme a la fuente disponible (**{top_chunk.get('norma', 'Norma')} - {top_chunk.get('article', '')}**):\n\n"
+                    f"{top_chunk.get('content', '')}\n\n"
+                    f"*(Extracto directo de contingencia ante intermitencia temporal del modelo generativo)*."
+                )
+                accumulated_text_parts.append(fallback_txt)
+                yield _sse("token", {"text": fallback_txt})
+            elif not accumulated_text_parts:
+                yield _sse("error", {"detail": err_msg})
 
         final_answer = "".join(accumulated_text_parts).strip()
         all_citations = _merge_google_grounding_citations(citations, google_sources)
         total_ms = int((time.perf_counter() - t0) * 1000)
 
-        # Persistir respuesta final en DB usando sesión limpia
         msg_id = str(uuid.uuid4())
         if final_answer:
-            save_db = SessionLocal()
-            try:
-                metadata = {
-                    "retrieved_chunks_count": len(retrieved_chunks),
-                    "user_documents_used": prep["has_user_docs"],
-                    "web_fallback_used": bool(prep["web_enabled"] or google_sources),
-                    "google_grounding_count": len(google_sources),
-                    "ttft_ms": ttft_ms,
-                    "total_ms": total_ms,
-                    "disambiguation": prep["disambiguation"].model_dump() if prep["disambiguation"] else None,
-                }
-                msg = Message(
-                    id=msg_id,
-                    conversation_id=conv_id,
-                    role="assistant",
-                    content=final_answer,
-                    citations_json=json.dumps([c.model_dump() for c in all_citations], ensure_ascii=False),
-                    metadata_json=json.dumps(metadata, ensure_ascii=False),
-                )
-                save_db.add(msg)
-                conv_obj = save_db.query(Conversation).filter(Conversation.id == conv_id).first()
-                if conv_obj:
-                    conv_obj.updated_at = datetime.utcnow()
-                if user_id:
-                    save_db.add(
-                        AuditLog(
-                            user_id=user_id,
-                            action="CHAT_STREAM",
-                            details=f"Conv {conv_id[:8]} | TTFT {ttft_ms}ms | Total {total_ms}ms",
-                        )
+            def _persist_message() -> None:
+                save_db = SessionLocal()
+                try:
+                    metadata = {
+                        "retrieved_chunks_count": len(retrieved_chunks),
+                        "user_documents_used": prep["has_user_docs"],
+                        "web_fallback_used": bool(prep["web_enabled"] or google_sources),
+                        "google_grounding_count": len(google_sources),
+                        "ttft_ms": ttft_ms,
+                        "total_ms": total_ms,
+                        "disambiguation": prep["disambiguation"].model_dump() if prep["disambiguation"] else None,
+                        **provider_info,
+                    }
+                    msg = Message(
+                        id=msg_id,
+                        conversation_id=conv_id,
+                        role="assistant",
+                        content=final_answer,
+                        citations_json=json.dumps([c.model_dump() for c in all_citations], ensure_ascii=False),
+                        metadata_json=json.dumps(metadata, ensure_ascii=False),
                     )
-                save_db.commit()
-            finally:
-                save_db.close()
+                    save_db.add(msg)
+                    conv_obj = save_db.query(Conversation).filter(Conversation.id == conv_id).first()
+                    if conv_obj:
+                        conv_obj.updated_at = datetime.utcnow()
+                    if user_id:
+                        save_db.add(
+                            AuditLog(
+                                user_id=user_id,
+                                action="CHAT_STREAM",
+                                details=f"Conv {conv_id[:8]} | {provider_info.get('provider_used')} | TTFT {ttft_ms}ms | Total {total_ms}ms",
+                            )
+                        )
+                    save_db.commit()
+                finally:
+                    save_db.close()
+
+            await asyncio.to_thread(_persist_message)
 
         yield _sse(
             "done",
@@ -615,6 +636,7 @@ async def stream_chat(
                 "conversation_title": conv_title,
                 "ttft_ms": ttft_ms,
                 "total_ms": total_ms,
+                **provider_info,
             },
         )
 

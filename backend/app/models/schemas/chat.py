@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -38,6 +38,10 @@ class ChatQueryRequest(BaseModel):
     )
     temperature: float = Field(0.2, ge=0.0, le=1.0, description="Baja temperatura recomendada para rigor jurídico")
     use_web_fallback: bool = Field(False, description="Activar búsqueda web en tiempo real (Google Search / DANE / jurisprudencia)")
+    ai_provider: Literal["auto", "gemini", "grok"] = Field(
+        "auto",
+        description="Proveedor de IA preferido: 'auto' (óptimo con respaldo), 'gemini' (Google) o 'grok' (xAI)"
+    )
 
 
 class ChatQueryResponse(BaseModel):

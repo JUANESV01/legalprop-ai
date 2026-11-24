@@ -1,10 +1,10 @@
 # LegalProp AI
-### Asistente Jurídico Inteligente para Arriendos y Propiedad Horizontal en Colombia
+### Asistente Legal Inteligente para Propiedad Horizontal, Arriendos y Contratos en Colombia
 
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/Frontend-React_18_%2B_TypeScript-61DAFB.svg?logo=react&logoColor=black)](https://react.dev/)
-[![Google Gemini](https://img.shields.io/badge/IA-Google_Gemini_API-4285F4.svg?logo=google&logoColor=white)](https://ai.google.dev/)
-[![ChromaDB](https://img.shields.io/badge/VectorStore-ChromaDB-FF6B6B.svg)](https://www.trychroma.com/)
+[![Google Gemini](https://img.shields.io/badge/IA-Gemini_3.5_Flash_%2B_Grok_AI-4285F4.svg?logo=google&logoColor=white)](https://ai.google.dev/)
+[![ChromaDB](https://img.shields.io/badge/VectorStore-ChromaDB_768d-FF6B6B.svg)](https://www.trychroma.com/)
 [![Tailwind CSS](https://img.shields.io/badge/UI-Tailwind_CSS-38B2AC.svg?logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
 [![Render Ready](https://img.shields.io/badge/Deploy-Render_Free_Tier-46E3B7.svg)](https://render.com/)
 
@@ -64,18 +64,18 @@ El proyecto sigue el patrón **Modelo–Vista–Controlador (MVC)** con responsa
                        ┌──────────────────────────────┴──────────────────────────────┐
                        ▼                                                             ▼
          [ Motor RAG: ChromaDB ]                                        [ WebSearchService ]
-         - Aislamiento estricto por usuario (RNF04)                     - Bing RSS Colombia (gratis)
-         - Documentos privados (PDF/DOCX/TXT)                           - Google News RSS (gratis)
-         - Leyes marco (Ley 820 / Ley 675)                              - Wikipedia ES / DANE IPC
-         - Embeddings ultralivianos (<2 MB RAM)                         - Google Search Grounding
-         - Re-ranking híbrido (vector + léxico)
+         - Aislamiento estricto por usuario (RNF04)                     - Bing RSS Colombia (paralelo)
+         - Documentos privados (PDF/DOCX/TXT/XLSX/ODT/OCR)              - Google News RSS (paralelo)
+         - Corpus oficial: Leyes 675, 820, 1581, 80 y Guías             - Portal DANE IPC en vivo
+         - Embeddings reales gemini-embedding-001 (768d, 0 MB RAM)      - Google Search Grounding
+         - Re-ranking híbrido (vector + léxico + orden contractual)
                        │                                                             │
                        └──────────────────────────────┬──────────────────────────────┘
                                                       ▼
-                                        [ GeminiService (google-genai) ]
-                                        - Modelo: gemini-3.5-flash-lite (+ fallbacks)
-                                        - System prompt anti-alucinación y directo
-                                        - Streaming asíncrono (SSE sin bloquear event loop)
+                                        [ AIOrchestrator (Multi-IA) ]
+                                        - Selector: Automático | Gemini 3.5 Flash | Grok AI (xAI)
+                                        - Failover automático entre proveedores y modelos
+                                        - Streaming SSE 100% asíncrono (50+ flujos simultáneos)
                                                       │
                                                       ▼
                        [ Vista React: Respuesta limpia + botón "Ver fuentes (N)" + PDF ]
@@ -258,10 +258,14 @@ Abre `http://localhost:5173` (o compila con `npm run build` para servir todo des
 
 ---
 
-## 11. Verificación Automatizada (QA)
+## 11. Verificación Automatizada y Benchmarks RF/RNF (QA)
+
+Ejecuta la auditoría integral de estructura + la suite automatizada de 8 pruebas y benchmarks medibles (`RNF01`, `RNF02 < 2s`, `RNF04`, `RNF07 50 streams SSE`, `RNF08 WCAG AA`, `RNF09 Ley 1581` y `RNF10 PDF 50 págs. < 15s`):
 
 ```bash
-python3 verify_legalprop.py
+.venv/bin/python verify_legalprop.py
+# O únicamente la suite de pruebas y benchmarks en entorno aislado:
+.venv/bin/python -m unittest backend/tests/test_legalprop_suite.py -v
 ```
 
 > **Aviso de Responsabilidad Legal:** LegalProp AI es una herramienta de orientación normativa con fines académicos e informativos. No sustituye el concepto vinculante ni la representación legal de un abogado titulado.

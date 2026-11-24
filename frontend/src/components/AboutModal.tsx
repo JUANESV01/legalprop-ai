@@ -18,7 +18,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
           <div className="flex items-center space-x-3">
             <Logo size="sm" showText={true} />
             <span className="text-xs bg-teal-50 border border-teal-200 text-teal-800 font-semibold px-2.5 py-0.5 rounded-full">
-              v2.0.0
+              v2.1.0
             </span>
           </div>
           <button
@@ -81,6 +81,12 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
                 <CheckCircle2 className="w-4 h-4 text-teal-700 shrink-0 mt-0.5" />
                 <span>
                   <strong>Análisis de documentos propios:</strong> Puedes cargar contratos, reglamentos internos o manuales de convivencia (PDF, Word, Excel, ODT) para realizar consultas directas sobre tus documentos.
+                </span>
+              </li>
+              <li className="flex items-start space-x-2">
+                <CheckCircle2 className="w-4 h-4 text-teal-700 shrink-0 mt-0.5" />
+                <span>
+                  <strong>Motor Multi-IA seleccionable:</strong> Puedes elegir entre modo <em>Automático</em>, <em>Google Gemini</em> o <em>Grok AI (xAI)</em> con respaldo automático para máxima velocidad y continuidad.
                 </span>
               </li>
               <li className="flex items-start space-x-2">

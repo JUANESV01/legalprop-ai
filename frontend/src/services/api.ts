@@ -73,6 +73,13 @@ export interface StreamChatCallbacks {
     disambiguation?: DisambiguationInfo | null;
   }) => void;
   onToken?: (text: string) => void;
+  onProvider?: (info: {
+    provider_requested?: string;
+    provider_used?: string;
+    model_used?: string;
+    fallback_used?: boolean;
+    fallback_reason?: string;
+  }) => void;
   onWebSources?: (citations: Citation[]) => void;
   onDone?: (info: {
     message_id: string;
@@ -80,6 +87,9 @@ export interface StreamChatCallbacks {
     conversation_title: string;
     ttft_ms?: number;
     total_ms?: number;
+    provider_used?: string;
+    model_used?: string;
+    fallback_used?: boolean;
   }) => void;
   onError?: (detail: string) => void;
 }
@@ -249,6 +259,7 @@ export const apiService = {
       try {
         const parsed = JSON.parse(dataLines.join('\n'));
         if (eventName === 'metadata') callbacks.onMetadata?.(parsed);
+        else if (eventName === 'provider') callbacks.onProvider?.(parsed);
         else if (eventName === 'token') callbacks.onToken?.(parsed.text || '');
         else if (eventName === 'web_sources') callbacks.onWebSources?.(parsed.citations || []);
         else if (eventName === 'done') callbacks.onDone?.(parsed);

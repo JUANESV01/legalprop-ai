@@ -2,6 +2,7 @@ from datetime import datetime
 from fastapi import APIRouter
 from app.core.config import settings
 from app.db.database import DB_ENGINE_NAME
+from app.services.ai_orchestrator import ai_orchestrator
 from app.services.rag_engine import rag_engine
 
 router = APIRouter()
@@ -20,8 +21,13 @@ def health_check():
         "database_engine": DB_ENGINE_NAME,
         "gemini_api_configured": settings.is_gemini_configured,
         "gemini_model": settings.GEMINI_MODEL,
+        "xai_api_configured": settings.is_xai_configured,
+        "xai_model": settings.XAI_MODEL,
+        "ai_providers": ai_orchestrator.get_available_providers(),
         "features": {
             "sse_streaming": True,
+            "async_streaming": True,
+            "multi_ai_providers": ["auto", "gemini", "grok"],
             "jwt_auth": True,
             "pdf_export": True,
             "ipc_calculator": True,

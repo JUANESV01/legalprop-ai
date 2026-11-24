@@ -27,6 +27,7 @@ class IPCCalcResponse(BaseModel):
     ipc_aplicado: float
     fuente_ipc: str
     fuente_url: Optional[str] = None
+    verificado_en_vivo: bool = False
     incremento_maximo: float
     nuevo_canon_maximo: float
     cumple_tope_valor_comercial: Optional[bool] = None

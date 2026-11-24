@@ -6,6 +6,7 @@ Audita integridad, no vaciado y cumplimiento técnico de todos los componentes.
 """
 
 import os
+import subprocess
 import sys
 import re
 
@@ -207,10 +208,13 @@ check_dir("backend/app/models/domain", "Domain Models")
 check_dir("backend/app/models/schemas", "Schema Models")
 
 # Services
-check_file("backend/app/services/gemini_service.py", "Servicio Gemini", required_patterns=[r"genai\.Client", r"generate_response"])
-check_file("backend/app/services/rag_engine.py", "Servicio RAG Engine", required_patterns=[r"chromadb", r"ingest_document", r"(?:query_similar|retrieve_context)"])
+check_file("backend/app/services/gemini_service.py", "Servicio Gemini", required_patterns=[r"genai\.Client", r"generate_response", r"astream_response"])
+check_file("backend/app/services/grok_service.py", "Servicio Grok AI", required_patterns=[r"api\.x\.ai|XAI_BASE_URL", r"astream_response"])
+check_file("backend/app/services/ai_orchestrator.py", "Orquestador Multi-IA", required_patterns=[r"AIOrchestrator", r"astream_response"])
+check_file("backend/app/services/rag_engine.py", "Servicio RAG Engine", required_patterns=[r"chromadb", r"ingest_document", r"gemini-embedding-001", r"(?:query_similar|retrieve_context)"])
 check_file("backend/app/services/web_search.py", "Servicio Web Search", required_patterns=[r"search_legal_web"])
 check_file("backend/app/services/text_splitter.py", "Servicio Text Splitter", required_patterns=[r"split_legal_text"])
+check_file("backend/tests/test_legalprop_suite.py", "Suite Pruebas RF/RNF", required_patterns=[r"test_06_rnf02", r"test_07_rnf08", r"test_08_rnf10"])
 
 # Persistencia
 check_dir("backend/storage/vector_store", "Persistencia Vector Store", check_non_empty=False)
@@ -252,9 +256,19 @@ for r in audit_results:
     print(f"| {r['component']} | `{r['path']}` | **{r['status']}** | {r['details']} |")
 
 print("=" * 80)
-if all_ok:
-    print("[+] ESTADO GENERAL: 100% AUDITADO Y APROBADO (LISTO PARA COMMIT)")
+if not all_ok:
+    print("[-] ESTADO GENERAL: SE ENCONTRARON DISCREPANCIAS O ARCHIVOS FALTANTES")
+    sys.exit(1)
+
+print("[*] Ejecutando suite de pruebas automatizadas y benchmarks RF/RNF...")
+test_proc = subprocess.run(
+    [sys.executable, "-m", "unittest", os.path.join(REPO_ROOT, "backend", "tests", "test_legalprop_suite.py"), "-v"],
+    cwd=REPO_ROOT,
+)
+print("=" * 80)
+if test_proc.returncode == 0:
+    print("[+] ESTADO GENERAL: 100% AUDITADO, PRUEBAS RF/RNF APROBADAS (LISTO PARA COMMIT)")
     sys.exit(0)
 else:
-    print("[-] ESTADO GENERAL: SE ENCONTRARON DISCREPANCIAS O ARCHIVOS FALTANTES")
+    print("[-] ESTADO GENERAL: FALLARON PRUEBAS AUTOMATIZADAS RF/RNF")
     sys.exit(1)

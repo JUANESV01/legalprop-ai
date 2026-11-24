@@ -1,11 +1,13 @@
 import logging
 import re
-from typing import Dict, Any, Optional, Tuple
+import time
+from typing import Any, Dict, Optional, Tuple
+import httpx
 from app.services.web_search import web_search_service
 
 logger = logging.getLogger(__name__)
 
-# Histórico oficial certificado por el DANE (variación anual del IPC en Colombia)
+# Serie histórica oficial certificada por el DANE (variación anual diciembre-diciembre del IPC en Colombia).
 # Según Ley 820 de 2003 Art. 20, el reajuste en el año N aplica hasta el 100% del IPC del año N-1.
 OFFICIAL_DANE_IPC_ANNUAL: Dict[int, Dict[str, Any]] = {
     2020: {
@@ -40,58 +42,132 @@ OFFICIAL_DANE_IPC_ANNUAL: Dict[int, Dict[str, Any]] = {
     },
 }
 
+DANE_IPC_URL = (
+    "https://www.dane.gov.co/index.php/estadisticas-por-tema/"
+    "precios-y-costos/indice-de-precios-al-consumidor-ipc"
+)
+CACHE_TTL_SECONDS = 60 * 60 * 12  # 12 horas
+
 
 class IPCService:
     """
-    Servicio para consulta del IPC oficial del DANE y cálculo automatizado del tope
+    Servicio para consulta en vivo del IPC oficial del DANE y cálculo automatizado del tope
     legal de incremento de canon de arrendamiento (HU01 / RF01 / Ley 820 de 2003 Art. 20).
+
+    Estrategia de resolución:
+    1. Caché en memoria (12h) para respuestas sub-milisegundo.
+    2. Consulta en vivo a fuentes oficiales (portal DANE + búsqueda web filtrada a DANE Colombia)
+       para cualquier año solicitado cuando `consultar_web=True`.
+    3. Validación cruzada con la serie histórica certificada del DANE para evitar cifras erróneas
+       de titulares de prensa (p. ej. inflación mensual confundida con variación anual definitiva).
     """
+
+    def __init__(self) -> None:
+        self._live_cache: Dict[int, Tuple[float, float, str, Optional[str], bool]] = {}
 
     def get_known_rates(self) -> Dict[int, Dict[str, Any]]:
         return OFFICIAL_DANE_IPC_ANNUAL
+
+    async def _fetch_from_dane_portal(self, ipc_year: int) -> Optional[Tuple[float, str, str]]:
+        """Consulta directa al portal oficial del DANE buscando la variación anual de diciembre."""
+        try:
+            async with httpx.AsyncClient(timeout=2.5, follow_redirects=True) as client:
+                resp = await client.get(
+                    DANE_IPC_URL,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; LegalPropAI/2.1)"},
+                )
+                if resp.status_code != 200:
+                    return None
+                text = re.sub(r"<[^>]+>", " ", resp.text)
+                text = re.sub(r"\s+", " ", text)
+                # Buscar patrón explícito: "diciembre de {ipc_year}" + "variación anual" + porcentaje
+                pattern = re.compile(
+                    rf"(?:diciembre\s+(?:de\s+)?{ipc_year}|a[ñn]o\s+corrido\s+{ipc_year}|variaci[oó]n\s+anual[^%]{{0,90}}{ipc_year})[^%]{{0,120}}?(\d{{1,2}}[.,]\d{{1,2}})\s*%",
+                    re.IGNORECASE,
+                )
+                match = pattern.search(text)
+                if match:
+                    val = round(float(match.group(1).replace(",", ".")), 2)
+                    if 0.5 <= val <= 25.0:
+                        return (
+                            val,
+                            f"Consultado en vivo en DANE (dane.gov.co) — IPC anual {ipc_year}",
+                            DANE_IPC_URL,
+                        )
+        except Exception as e:
+            logger.debug(f"Consulta directa a portal DANE omitida ({ipc_year}): {e}")
+        return None
+
+    async def _fetch_from_web_sources(self, ipc_year: int) -> Optional[Tuple[float, str, Optional[str]]]:
+        """Consulta en vivo fuentes públicas sobre la variación anual oficial del IPC DANE."""
+        try:
+            web_results = await web_search_service.search_legal_web(
+                f"IPC anual {ipc_year} DANE Colombia variacion anual diciembre porcentaje",
+                num_results=4,
+            )
+            for item in web_results:
+                blob = f"{item.get('title', '')} {item.get('snippet', '')}"
+                low = blob.lower()
+                if str(ipc_year) in blob and ("ipc" in low or "inflaci" in low) and "dane" in low:
+                    matches = re.findall(r"(\d{1,2}[.,]\d{1,2})\s*%", blob)
+                    for m in matches:
+                        val = round(float(m.replace(",", ".")), 2)
+                        if 0.5 <= val <= 25.0:
+                            # Si el año ya está cerrado en la serie certificada DANE,
+                            # solo aceptamos el resultado web si confirma la cifra anual oficial
+                            # (evita confundir inflación mensual o acumulada parcial con la anual definitiva).
+                            known = OFFICIAL_DANE_IPC_ANNUAL.get(ipc_year)
+                            if known and abs(val - known["ipc"]) > 0.15:
+                                continue
+                            return (
+                                val,
+                                f"Verificado en vivo ({item.get('title', 'DANE')[:70]}) — IPC {ipc_year}",
+                                item.get("link") or DANE_IPC_URL,
+                            )
+        except Exception as e:
+            logger.warning(f"No se pudo verificar IPC {ipc_year} vía web: {e}")
+        return None
 
     async def resolve_ipc_for_year(
         self,
         ipc_year: int,
         consultar_web: bool = True,
-    ) -> Tuple[float, str, Optional[str]]:
+    ) -> Tuple[float, str, Optional[str], bool]:
         """
-        Obtiene el porcentaje de IPC anual para el año base `ipc_year` (año calendario anterior
-        al año de reajuste). Intenta verificación web para años recientes y usa tabla oficial DANE como respaldo.
+        Resuelve el porcentaje de IPC anual para el año base `ipc_year` (año calendario anterior
+        al año de reajuste). Retorna (ipc, fuente, url, verificado_en_vivo).
         """
-        if consultar_web and ipc_year >= 2025:
-            try:
-                web_results = await web_search_service.search_legal_web(
-                    f"IPC anual {ipc_year} DANE Colombia variacion anual definitiva porcentaje",
-                    num_results=4,
-                )
-                for item in web_results:
-                    blob = f"{item.get('title', '')} {item.get('snippet', '')}"
-                    if str(ipc_year) in blob and ("ipc" in blob.lower() or "inflaci" in blob.lower()):
-                        # Buscar porcentajes razonables entre 0.5% y 25.0%
-                        matches = re.findall(r"(\d{1,2}[.,]\d{1,2})\s*%", blob)
-                        for m in matches:
-                            val = float(m.replace(",", "."))
-                            if 0.5 <= val <= 25.0:
-                                return (
-                                    val,
-                                    f"Verificado vía web ({item.get('title', 'DANE')}) — IPC {ipc_year}",
-                                    item.get("link"),
-                                )
-            except Exception as e:
-                logger.warning(f"No se pudo verificar IPC {ipc_year} vía web: {e}")
+        now = time.time()
+        cached = self._live_cache.get(ipc_year)
+        if cached and (now - cached[0]) < CACHE_TTL_SECONDS:
+            return cached[1], cached[2], cached[3], cached[4]
+
+        if consultar_web:
+            dane_hit = await self._fetch_from_dane_portal(ipc_year)
+            if dane_hit:
+                val, fuente, url = dane_hit
+                known = OFFICIAL_DANE_IPC_ANNUAL.get(ipc_year)
+                if not known or abs(val - known["ipc"]) <= 0.15:
+                    self._live_cache[ipc_year] = (now, val, fuente, url, True)
+                    return val, fuente, url, True
+
+            web_hit = await self._fetch_from_web_sources(ipc_year)
+            if web_hit:
+                val, fuente, url = web_hit
+                self._live_cache[ipc_year] = (now, val, fuente, url, True)
+                return val, fuente, url, True
 
         if ipc_year in OFFICIAL_DANE_IPC_ANNUAL:
             entry = OFFICIAL_DANE_IPC_ANNUAL[ipc_year]
-            return entry["ipc"], entry["fuente"], entry["url"]
+            return entry["ipc"], entry["fuente"], entry["url"], False
 
-        # Fallback al último año certificado disponible
         latest_year = max(OFFICIAL_DANE_IPC_ANNUAL.keys())
         entry = OFFICIAL_DANE_IPC_ANNUAL[latest_year]
         return (
             entry["ipc"],
-            f"Referencia más reciente disponible ({entry['fuente']})",
+            f"Referencia certificada más reciente ({entry['fuente']})",
             entry["url"],
+            False,
         )
 
     async def calculate_rent_increase(
@@ -108,8 +184,9 @@ class IPCService:
             ipc_val = round(float(ipc_personalizado), 2)
             fuente = f"Porcentaje personalizado ingresado por el usuario ({ipc_val}%)"
             fuente_url = None
+            verificado_en_vivo = False
         else:
-            ipc_val, fuente, fuente_url = await self.resolve_ipc_for_year(
+            ipc_val, fuente, fuente_url, verificado_en_vivo = await self.resolve_ipc_for_year(
                 ipc_year=anio_ipc_base,
                 consultar_web=consultar_web,
             )
@@ -130,6 +207,7 @@ class IPCService:
             "ipc_aplicado": ipc_val,
             "fuente_ipc": fuente,
             "fuente_url": fuente_url,
+            "verificado_en_vivo": verificado_en_vivo,
             "incremento_maximo": incremento_maximo,
             "nuevo_canon_maximo": nuevo_canon_maximo,
             "cumple_tope_valor_comercial": cumple_tope,

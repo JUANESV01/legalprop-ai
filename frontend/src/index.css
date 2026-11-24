@@ -7,6 +7,25 @@
     @apply bg-cream-100 text-slate-800 selection:bg-teal-100 selection:text-teal-900 font-sans antialiased;
     background-color: #F5F1E8;
   }
+
+  /* Accesibilidad WCAG 2.1 AA: foco visible por teclado en todos los elementos interactivos */
+  a:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid #0E5450;
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 @layer utilities {

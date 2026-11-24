@@ -157,6 +157,30 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def resolve_optional_user_detached(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(BEARER_SCHEME),
+) -> Optional[Dict[str, str]]:
+    """
+    Resuelve el usuario autenticado sin retener una sesión SQLAlchemy abierta durante
+    respuestas de larga duración (SSE streaming — RNF07).
+    """
+    if not credentials or not credentials.credentials:
+        return None
+    payload = decode_access_token(credentials.credentials)
+    if not payload or not payload.get("sub"):
+        return None
+    from app.db.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == payload["sub"], User.is_active == True).first()  # noqa: E712
+        if not user:
+            return None
+        return {"id": user.id, "role": user.role, "email": user.email}
+    finally:
+        db.close()
+
+
 def get_optional_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(BEARER_SCHEME),
     db: Session = Depends(get_db),

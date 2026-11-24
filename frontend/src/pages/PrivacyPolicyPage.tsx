@@ -146,7 +146,7 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({ onNavigate
               3. Finalidades del Tratamiento
             </h3>
             <ul className="list-disc pl-5 space-y-1.5">
-              <li>Prestar orientación normativa informativa sobre arrendamiento urbano (Ley 820 de 2003) y propiedad horizontal (Ley 675 de 2001).</li>
+              <li>Prestar orientación legal informativa sobre propiedad horizontal (Ley 675 de 2001), arrendamientos (Ley 820 de 2003), verificación de contratos y normativa colombiana general.</li>
               <li>Extraer, indexar y consultar documentos cargados voluntariamente por el titular, manteniéndolos aislados de otros usuarios dentro de la plataforma.</li>
               <li>Conservar el historial de chats (<code>/chat/&lt;id&gt;</code>) y permitir la descarga de constancias en PDF.</li>
               <li>Evaluar y mejorar la calidad operativa del asistente y procesar consultas/documentos mediante servicios de inteligencia artificial.</li>
@@ -158,13 +158,13 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({ onNavigate
             <div className="p-4 sm:p-5 rounded-xl bg-amber-50/70 border border-amber-200/90 space-y-2">
               <div className="flex items-center gap-2 text-amber-900 font-bold text-xs sm:text-sm">
                 <Sparkles className="w-4 h-4 text-amber-700 shrink-0" />
-                <span>4. Uso de Documentos y Consultas con Inteligencia Artificial (Google Gemini API)</span>
+                <span>4. Uso de Documentos y Consultas con Inteligencia Artificial (Google Gemini y Grok AI / xAI)</span>
               </div>
               <p className="text-xs text-slate-700 leading-relaxed">
                 <strong>Aislamiento interno:</strong> Dentro de LegalProp AI, tus archivos privados y chats se aíslan estrictamente por cuenta (<code>owner_scope</code> en ChromaDB y <code>owner_id</code> en PostgreSQL); ningún otro usuario de la plataforma puede acceder a ellos.
               </p>
               <p className="text-xs text-slate-700 leading-relaxed">
-                <strong>Procesamiento y aprendizaje de la IA:</strong> Para analizar tus archivos y generar respuestas, las consultas y los fragmentos relevantes de los documentos que subas son transmitidos sobre conexiones cifradas <strong>HTTPS/TLS</strong> a la <strong>API de Google Gemini</strong>. De acuerdo con los términos aplicables al nivel gratuito/estándar de la API de Google Gemini, <strong>los textos, preguntas y fragmentos de documentos procesados pueden ser utilizados por el proveedor de inteligencia artificial para entrenar, evaluar y mejorar sus modelos de IA</strong>, y RTK Solutions podrá emplear patrones técnicos anonimizados para perfeccionar el asistente.
+                <strong>Procesamiento Multi-IA y aprendizaje:</strong> Según el motor elegido por el usuario (<em>Automático</em>, <em>Google Gemini</em> o <em>Grok AI de xAI</em>), las consultas y los fragmentos relevantes de los documentos cargados se transmiten sobre conexiones cifradas <strong>HTTPS/TLS</strong> a la <strong>API de Google Gemini</strong> (incluyendo embeddings semánticos) y/o a la <strong>API de xAI (Grok)</strong>. De acuerdo con los términos aplicables de dichos proveedores externos de IA, <strong>los textos procesados en planes estándar/gratuitos pueden ser utilizados por los proveedores para evaluar, entrenar o mejorar sus modelos</strong>, y RTK Solutions podrá emplear métricas técnicas anonimizadas para perfeccionar el asistente.
               </p>
               <p className="text-xs text-amber-950 font-medium leading-relaxed">
                 Recomendación obligatoria: Antes de subir contratos, actas o reglamentos, elimina o anonimiza números de cédula, firmas, cuentas bancarias, direcciones exactas o datos personales de terceros que no cuenten con autorización.

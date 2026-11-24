@@ -43,7 +43,7 @@ export const Header: React.FC<HeaderProps> = ({
           type="button"
           onClick={onGoHome}
           className="text-left focus:outline-none"
-          title="Ir a la página principal (/home)"
+          title="Ir a la página principal"
         >
           <Logo size="sm" showText={true} />
         </button>
@@ -60,7 +60,7 @@ export const Header: React.FC<HeaderProps> = ({
 
       <div className="flex items-center gap-2">
         <span
-          className="hidden sm:inline-flex items-center gap-1.5 text-[11px] text-slate-500 mr-1"
+          className="hidden sm:inline-flex items-center gap-1.5 text-[11px] text-slate-600 mr-1"
           title={isHealthy ? 'Servicio conectado' : 'Conectando...'}
         >
           <span className={`w-1.5 h-1.5 rounded-full ${isHealthy ? 'bg-teal-600' : 'bg-amber-500'}`} />

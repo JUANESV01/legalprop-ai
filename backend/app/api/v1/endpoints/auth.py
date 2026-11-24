@@ -186,15 +186,16 @@ def get_privacy_policy():
         "ai_processing_and_training_notice": (
             "Dentro de LegalProp AI los documentos privados de cada cuenta se aíslan estrictamente "
             "(owner_scope) y no son visibles para otros usuarios. Sin embargo, para generar respuestas, "
-            "las consultas y fragmentos pertinentes se procesan mediante la API de Google Gemini sobre "
-            "HTTPS/TLS; conforme a las condiciones del plan gratuito/estándar de la API, el proveedor de IA "
-            "puede utilizar dichos contenidos para mejorar y entrenar sus modelos. Se recomienda anonimizar "
-            "datos personales de terceros o información altamente confidencial antes de cargar archivos."
+            "las consultas y fragmentos pertinentes se procesan sobre HTTPS/TLS mediante la API de Google "
+            "Gemini y/o la API de xAI (Grok AI), según el motor elegido; conforme a las condiciones de los "
+            "planes estándar/gratuitos de dichos proveedores, los textos procesados pueden emplearse para "
+            "mejorar y entrenar sus modelos. Se recomienda anonimizar datos personales de terceros o "
+            "información altamente confidencial antes de cargar archivos."
         ),
         "purposes": [
-            "Prestar orientación normativa informativa sobre arriendos (Ley 820 de 2003) y propiedad horizontal (Ley 675 de 2001).",
+            "Prestar orientación legal informativa sobre propiedad horizontal (Ley 675 de 2001), arriendos (Ley 820 de 2003), verificación de contratos y normativa colombiana general.",
             "Procesar y analizar documentos cargados voluntariamente por el titular bajo aislamiento entre cuentas.",
-            "Mejorar la calidad operativa del asistente y permitir el procesamiento por modelos de IA (Google Gemini API).",
+            "Permitir el procesamiento e indexación semántica mediante proveedores de IA seleccionables (Google Gemini API y Grok AI / xAI).",
             "Proteger las cuentas con JWT, bloqueo anti-fuerza bruta y garantizar acceso, exportación JSON y supresión definitiva.",
         ],
         "rights": [

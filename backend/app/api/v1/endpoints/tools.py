@@ -1,5 +1,6 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
+from app.core.rate_limiter import get_trusted_client_ip, rate_limiter
 from app.core.security import get_optional_user
 from app.models.db_models import User
 from app.models.schemas.tools import (
@@ -53,8 +54,12 @@ async def calculate_ipc_increase(payload: IPCCalcRequest):
 )
 def create_pdf_report(
     payload: PDFReportRequest,
+    request: Request,
     current_user: Optional[User] = Depends(get_optional_user),
 ):
+    client_key = f"u:{current_user.id}" if current_user else f"ip:{get_trusted_client_ip(request)}"
+    rate_limiter.check(f"tools:pdf:{client_key}", limit=15, window_seconds=60)
+
     pdf_bytes = generate_consultation_pdf(
         question=payload.question,
         answer=payload.answer,
@@ -78,8 +83,12 @@ def create_pdf_report(
 )
 def export_legal_draft(
     payload: DraftExportRequest,
+    request: Request,
     current_user: Optional[User] = Depends(get_optional_user),
 ):
+    client_key = f"u:{current_user.id}" if current_user else f"ip:{get_trusted_client_ip(request)}"
+    rate_limiter.check(f"tools:draft:{client_key}", limit=15, window_seconds=60)
+
     effective_user = payload.user_name or (current_user.full_name if current_user else None)
 
     if payload.format == "docx":

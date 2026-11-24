@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ArrowUp, Cpu, Globe, Loader2, Paperclip, X } from 'lucide-react';
+import { ArrowUp, Cpu, Globe, Paperclip, Square, X } from 'lucide-react';
 import { AIProvider, DocumentSummary } from '../../types';
 
 interface ChatInputProps {
   onSendMessage: (query: string, useWebFallback: boolean) => void;
+  onStopStreaming?: () => void;
   isLoading: boolean;
   onOpenUpload?: () => void;
   userDocuments?: DocumentSummary[];
@@ -21,6 +22,7 @@ const PROVIDER_OPTIONS: Array<{ id: AIProvider; label: string; title: string }> 
 
 export const ChatInput: React.FC<ChatInputProps> = ({
   onSendMessage,
+  onStopStreaming,
   isLoading,
   onOpenUpload,
   userDocuments = [],
@@ -154,18 +156,26 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               </div>
             </div>
 
-            <button
-              type="submit"
-              disabled={!input.trim() || isLoading}
-              aria-label="Enviar consulta"
-              className="w-8 h-8 rounded-xl bg-teal-700 hover:bg-teal-800 disabled:opacity-35 text-white flex items-center justify-center transition-all shrink-0"
-            >
-              {isLoading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
+            {isLoading && onStopStreaming ? (
+              <button
+                type="button"
+                onClick={onStopStreaming}
+                aria-label="Detener respuesta"
+                title="Detener generación en curso"
+                className="w-8 h-8 rounded-xl bg-rose-700 hover:bg-rose-800 text-white flex items-center justify-center transition-all shrink-0"
+              >
+                <Square className="w-3.5 h-3.5 fill-current" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!input.trim() || isLoading}
+                aria-label="Enviar consulta"
+                className="w-8 h-8 rounded-xl bg-teal-700 hover:bg-teal-800 disabled:opacity-35 text-white flex items-center justify-center transition-all shrink-0"
+              >
                 <ArrowUp className="w-4 h-4 stroke-[2.5]" />
-              )}
-            </button>
+              </button>
+            )}
           </div>
         </div>
       </form>

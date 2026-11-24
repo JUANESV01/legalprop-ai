@@ -1,7 +1,8 @@
 import json
 from datetime import datetime
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from typing import Dict, List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.core.security import get_guest_session_id, get_optional_user
 from app.db.database import get_db
@@ -28,7 +29,8 @@ def _check_conversation_access(
         if conv.user_id != current_user.id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sin acceso a esta conversación.")
     else:
-        if conv.user_id is not None or (guest_session_id and conv.guest_session_id != guest_session_id):
+        # Invitados requieren obligatoriamente cabecera X-Guest-Session válida que coincida exactamente
+        if conv.user_id is not None or not guest_session_id or conv.guest_session_id != guest_session_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sin acceso a esta conversación.")
 
 
@@ -39,6 +41,8 @@ def _check_conversation_access(
 )
 @router.get("/", include_in_schema=False, response_model=List[ConversationSummary])
 def list_conversations(
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     current_user: Optional[User] = Depends(get_optional_user),
     guest_session_id: Optional[str] = Depends(get_guest_session_id),
     db: Session = Depends(get_db),
@@ -48,7 +52,8 @@ def list_conversations(
             db.query(Conversation)
             .filter(Conversation.user_id == current_user.id)
             .order_by(Conversation.updated_at.desc())
-            .limit(60)
+            .offset(offset)
+            .limit(limit)
             .all()
         )
     elif guest_session_id:
@@ -59,26 +64,37 @@ def list_conversations(
                 Conversation.guest_session_id == guest_session_id,
             )
             .order_by(Conversation.updated_at.desc())
-            .limit(30)
+            .offset(offset)
+            .limit(min(limit, 30))
             .all()
         )
     else:
         return []
 
-    results: List[ConversationSummary] = []
-    for c in convs:
-        msg_count = db.query(Message).filter(Message.conversation_id == c.id).count()
-        results.append(
-            ConversationSummary(
-                id=c.id,
-                title=c.title,
-                category=c.category,
-                message_count=msg_count,
-                created_at=c.created_at,
-                updated_at=c.updated_at,
-            )
+    if not convs:
+        return []
+
+    # Evitar consultas N+1 usando una sola agregación GROUP BY
+    conv_ids = [c.id for c in convs]
+    counts_rows = (
+        db.query(Message.conversation_id, func.count(Message.id))
+        .filter(Message.conversation_id.in_(conv_ids))
+        .group_by(Message.conversation_id)
+        .all()
+    )
+    count_map: Dict[str, int] = {cid: int(cnt) for cid, cnt in counts_rows}
+
+    return [
+        ConversationSummary(
+            id=c.id,
+            title=c.title,
+            category=c.category,
+            message_count=count_map.get(c.id, 0),
+            created_at=c.created_at,
+            updated_at=c.updated_at,
         )
-    return results
+        for c in convs
+    ]
 
 
 @router.post(
@@ -93,9 +109,15 @@ def create_conversation(
     guest_session_id: Optional[str] = Depends(get_guest_session_id),
     db: Session = Depends(get_db),
 ):
+    if not current_user and not guest_session_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Se requiere iniciar sesión o enviar una sesión de invitado válida (X-Guest-Session).",
+        )
+
     conv = Conversation(
         user_id=current_user.id if current_user else None,
-        guest_session_id=None if current_user else (guest_session_id or "anonymous"),
+        guest_session_id=None if current_user else guest_session_id,
         title=(payload.title or "Nueva consulta normativa").strip(),
         category=payload.category,
     )
@@ -245,7 +267,7 @@ def export_conversation_pdf(
     assistant_answers = []
     all_citations = []
     seen_cits = set()
-    for idx, m in enumerate(msgs):
+    for m in msgs:
         if m.role == "user":
             assistant_answers.append(f"Consulta: {m.content}")
         else:

@@ -3,17 +3,18 @@ Módulo central de seguridad, cifrado y autenticación JWT (RF10 / RNF04 / RNF09
 
 Responsabilidades:
 - Cifrado de contraseñas, respuestas de seguridad y códigos de respaldo con bcrypt.
-- Emisión y verificación de tokens JWT HS256.
+- Emisión, verificación y revocación (`token_version`) de tokens JWT HS256.
+- Protección contra enumeración por tiempo (dummy bcrypt hash).
 - Generación de códigos maestros de recuperación (secrets) y anonimización de IP en logs.
-- Dependencias FastAPI para identificar usuario autenticado o sesión invitada aislada.
+- Dependencias FastAPI para identificar usuario autenticado o sesión invitada estrictamente aislada.
 """
 
 import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
-import string
 import time
 from typing import Any, Dict, Optional
 import bcrypt
@@ -21,6 +22,7 @@ from fastapi import Depends, Header, HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 from app.core.config import settings
+from app.core.rate_limiter import get_trusted_client_ip
 from app.db.database import get_db
 from app.models.db_models import User
 
@@ -28,6 +30,11 @@ API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 BEARER_SCHEME = HTTPBearer(auto_error=False)
 
 RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # Sin caracteres ambiguos (0/O, 1/I)
+GUEST_SESSION_RE = re.compile(r"^[a-zA-Z0-9_-]{12,64}$")
+FORBIDDEN_GUEST_IDS = {"anonymous", "anon", "guest", "public", "default", "null", "undefined"}
+
+# Hash bcrypt precalculado para igualar el tiempo de respuesta cuando el correo no existe
+DUMMY_BCRYPT_HASH = bcrypt.hashpw(b"legalprop-timing-dummy-secret", bcrypt.gensalt(rounds=12)).decode("utf-8")
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -90,12 +97,11 @@ def verify_recovery_code(code: str, code_hash: Optional[str]) -> bool:
 
 
 def anonymize_client_ip(request: Optional[Request]) -> Optional[str]:
-    """Calcula un hash truncado (no reversible) de la IP para auditoría segura sin guardar PII."""
+    """Calcula un hash truncado (no reversible) de la IP confiable para auditoría sin PII."""
     if not request:
         return None
-    forwarded = request.headers.get("x-forwarded-for")
-    raw_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "")
-    if not raw_ip:
+    raw_ip = get_trusted_client_ip(request)
+    if not raw_ip or raw_ip == "unknown":
         return None
     digest = hmac.new(
         settings.JWT_SECRET_KEY.encode("utf-8"),
@@ -109,13 +115,19 @@ def create_access_token(
     subject: str,
     extra_claims: Optional[Dict[str, Any]] = None,
     expires_minutes: Optional[int] = None,
+    token_version: int = 1,
 ) -> str:
-    """Genera un JSON Web Token (JWT) estándar HS256."""
+    """Genera un JSON Web Token (JWT) HS256 con versión revocable (`tv`)."""
     now = int(time.time())
     exp = now + (expires_minutes or settings.JWT_EXPIRATION_MINUTES) * 60
 
     header = {"alg": "HS256", "typ": "JWT"}
-    payload: Dict[str, Any] = {"sub": subject, "iat": now, "exp": exp}
+    payload: Dict[str, Any] = {
+        "sub": subject,
+        "iat": now,
+        "exp": exp,
+        "tv": int(token_version or 1),
+    }
     if extra_claims:
         payload.update(extra_claims)
 
@@ -157,12 +169,18 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _token_version_matches(payload: Dict[str, Any], user: User) -> bool:
+    expected_tv = int(getattr(user, "token_version", 1) or 1)
+    token_tv = int(payload.get("tv", 1) or 1)
+    return token_tv == expected_tv
+
+
 def resolve_optional_user_detached(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(BEARER_SCHEME),
 ) -> Optional[Dict[str, str]]:
     """
     Resuelve el usuario autenticado sin retener una sesión SQLAlchemy abierta durante
-    respuestas de larga duración (SSE streaming — RNF07).
+    respuestas de larga duración (SSE streaming — RNF07), verificando revocación `tv`.
     """
     if not credentials or not credentials.credentials:
         return None
@@ -174,7 +192,7 @@ def resolve_optional_user_detached(
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.id == payload["sub"], User.is_active == True).first()  # noqa: E712
-        if not user:
+        if not user or not _token_version_matches(payload, user):
             return None
         return {"id": user.id, "role": user.role, "email": user.email}
     finally:
@@ -190,7 +208,10 @@ def get_optional_user(
     payload = decode_access_token(credentials.credentials)
     if not payload or not payload.get("sub"):
         return None
-    return db.query(User).filter(User.id == payload["sub"], User.is_active == True).first()  # noqa: E712
+    user = db.query(User).filter(User.id == payload["sub"], User.is_active == True).first()  # noqa: E712
+    if not user or not _token_version_matches(payload, user):
+        return None
+    return user
 
 
 def get_current_user(
@@ -209,10 +230,10 @@ def get_current_user(
             detail="Tu sesión ha expirado o el token es inválido. Inicia sesión nuevamente.",
         )
     user = db.query(User).filter(User.id == payload["sub"], User.is_active == True).first()  # noqa: E712
-    if not user:
+    if not user or not _token_version_matches(payload, user):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Usuario no encontrado o cuenta inactiva.",
+            detail="Tu sesión fue revocada o expiró. Inicia sesión nuevamente.",
         )
     return user
 
@@ -230,19 +251,31 @@ def require_master_user(current_user: User = Depends(get_current_user)) -> User:
 def get_guest_session_id(
     x_guest_session: Optional[str] = Header(default=None, alias="X-Guest-Session"),
 ) -> Optional[str]:
+    """
+    Valida y sanitiza el identificador de sesión invitada.
+    Rechaza alias compartidos como 'anonymous' e IDs débiles (< 12 caracteres)
+    para impedir fugas cruzadas entre invitados (RNF04 / Ley 1581).
+    """
     if not x_guest_session:
         return None
     clean = x_guest_session.strip()[:64]
-    return clean or None
+    if not clean or clean.lower() in FORBIDDEN_GUEST_IDS:
+        return None
+    if not GUEST_SESSION_RE.match(clean):
+        return None
+    return clean
 
 
-def resolve_owner_scope(user: Optional[User], guest_session_id: Optional[str]) -> str:
-    """Identificador único de aislamiento en ChromaDB (RNF04)."""
+def resolve_owner_scope(user: Optional[Any], guest_session_id: Optional[str]) -> str:
+    """
+    Identificador único de aislamiento en ChromaDB (RNF04).
+    Nunca cae en un espacio compartido 'anonymous': sin sesión válida crea un scope efímero único.
+    """
     if user:
         return f"user:{user.id}"
-    if guest_session_id:
+    if guest_session_id and guest_session_id.lower() not in FORBIDDEN_GUEST_IDS:
         return f"guest:{guest_session_id}"
-    return "guest:anonymous"
+    return f"ephemeral:{secrets.token_hex(12)}"
 
 
 def validate_api_key(api_key: Optional[str] = Security(API_KEY_HEADER)) -> bool:

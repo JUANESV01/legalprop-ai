@@ -1,12 +1,14 @@
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 from app.models.schemas.chat import CitationSchema
+
+ValidConvCategory = Literal["arriendo", "propiedad_horizontal", "manual_interno", "contrato", "general"]
 
 
 class ConversationCreateRequest(BaseModel):
     title: Optional[str] = Field("Nueva consulta normativa", max_length=200)
-    category: Optional[str] = None
+    category: Optional[ValidConvCategory] = None
 
 
 class ConversationRenameRequest(BaseModel):

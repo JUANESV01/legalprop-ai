@@ -29,6 +29,7 @@ export const AccountProfileModal: React.FC<AccountProfileModalProps> = ({
   onAccountDeleted,
 }) => {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deletePwd, setDeletePwd] = useState('');
   const [busy, setBusy] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [curPwd, setCurPwd] = useState('');
@@ -43,6 +44,7 @@ export const AccountProfileModal: React.FC<AccountProfileModalProps> = ({
     setNewBackupCode(null);
     setStatusMsg(null);
     setConfirmDelete(false);
+    setDeletePwd('');
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
@@ -91,10 +93,17 @@ export const AccountProfileModal: React.FC<AccountProfileModalProps> = ({
     }
   };
 
-  const handleDelete = async () => {
+  const handleDelete = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!deletePwd.trim()) {
+      setStatusMsg({ type: 'err', text: 'Ingresa tu contraseña actual para confirmar la eliminación.' });
+      return;
+    }
     setBusy(true);
+    setStatusMsg(null);
     try {
-      await apiService.deleteMyAccount();
+      await apiService.deleteMyAccount(deletePwd);
+      setDeletePwd('');
       onAccountDeleted();
       onClose();
     } catch (e: any) {
@@ -319,28 +328,39 @@ export const AccountProfileModal: React.FC<AccountProfileModalProps> = ({
                 <span>Eliminar cuenta y datos definitivamente</span>
               </button>
             ) : (
-              <div className="p-3 bg-rose-50 border border-rose-300 rounded-xl space-y-2">
+              <form onSubmit={handleDelete} className="p-3 bg-rose-50 border border-rose-300 rounded-xl space-y-2.5">
                 <p className="text-[11px] text-rose-900">
-                  Esta acción elimina permanentemente tu cuenta, chats y archivos. ¿Deseas continuar?
+                  Esta acción elimina permanentemente tu cuenta, chats y archivos. Confirma con tu contraseña actual:
                 </p>
+                <input
+                  type="password"
+                  required
+                  aria-label="Contraseña para confirmar eliminación de cuenta"
+                  value={deletePwd}
+                  onChange={(e) => setDeletePwd(e.target.value)}
+                  placeholder="Tu contraseña actual"
+                  className="w-full px-3 py-2 bg-white border border-rose-300 rounded-lg text-xs text-slate-900"
+                />
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    onClick={() => setConfirmDelete(false)}
+                    onClick={() => {
+                      setConfirmDelete(false);
+                      setDeletePwd('');
+                    }}
                     className="flex-1 py-1.5 bg-white border border-cream-300 rounded-lg text-slate-800"
                   >
                     Cancelar
                   </button>
                   <button
-                    type="button"
-                    onClick={handleDelete}
-                    disabled={busy}
-                    className="flex-1 py-1.5 bg-rose-700 hover:bg-rose-800 text-white font-semibold rounded-lg"
+                    type="submit"
+                    disabled={busy || !deletePwd.trim()}
+                    className="flex-1 py-1.5 bg-rose-700 hover:bg-rose-800 disabled:opacity-50 text-white font-semibold rounded-lg"
                   >
                     Eliminar todo
                   </button>
                 </div>
-              </div>
+              </form>
             )}
           </div>
 

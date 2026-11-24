@@ -179,12 +179,33 @@ class LegalPropRequirementsTestSuite(unittest.IsolatedAsyncioTestCase):
 
             headers = {"Authorization": f"Bearer {token}"}
 
-            # 3. Exportación JSON Habeas Data
+            # 3. Exportación JSON Habeas Data completa (incluye audit_logs y policy)
             r_exp = await client.get("/api/v1/auth/export-data", headers=headers)
             self.assertEqual(r_exp.status_code, 200)
+            exp_json = r_exp.json()
             self.assertIn("privacy_policy_version", r_exp.text)
+            self.assertIn("security_audit_logs", exp_json)
+            self.assertIn("conversations", exp_json)
 
-            # 4. Protección fuerza bruta: 5 intentos fallidos -> HTTP 429
+            # 3b. Revocación de JWT al cambiar contraseña (token antiguo -> 401, nuevo -> 200)
+            r_chpwd = await client.post(
+                "/api/v1/auth/change-password",
+                headers=headers,
+                json={
+                    "current_password": "PasswordSegura2026!",
+                    "new_password": "PasswordNueva2026!",
+                },
+            )
+            self.assertEqual(r_chpwd.status_code, 200, r_chpwd.text)
+            new_token = r_chpwd.json().get("access_token")
+            self.assertTrue(bool(new_token))
+            r_old_me = await client.get("/api/v1/auth/me", headers=headers)
+            self.assertEqual(r_old_me.status_code, 401)
+            headers = {"Authorization": f"Bearer {new_token}"}
+            r_new_me = await client.get("/api/v1/auth/me", headers=headers)
+            self.assertEqual(r_new_me.status_code, 200)
+
+            # 4. Protección fuerza bruta por (correo + IP): 5 intentos fallidos -> HTTP 429
             for _ in range(5):
                 await client.post(
                     "/api/v1/auth/login",
@@ -192,12 +213,25 @@ class LegalPropRequirementsTestSuite(unittest.IsolatedAsyncioTestCase):
                 )
             r_locked = await client.post(
                 "/api/v1/auth/login",
-                json={"email": "ana.prueba@example.com", "password": "PasswordSegura2026!"},
+                json={"email": "ana.prueba@example.com", "password": "PasswordNueva2026!"},
             )
             self.assertEqual(r_locked.status_code, 429)
 
-            # 5. Derecho de supresión (eliminación definitiva)
-            r_del = await client.delete("/api/v1/auth/me", headers=headers)
+            # 5. Derecho de supresión exige reconfirmar contraseña actual
+            r_del_bad = await client.request(
+                "DELETE",
+                "/api/v1/auth/me",
+                headers=headers,
+                json={"password": "ClaveIncorrecta999!"},
+            )
+            self.assertEqual(r_del_bad.status_code, 400)
+
+            r_del = await client.request(
+                "DELETE",
+                "/api/v1/auth/me",
+                headers=headers,
+                json={"password": "PasswordNueva2026!"},
+            )
             self.assertEqual(r_del.status_code, 200)
             r_after = await client.get("/api/v1/auth/me", headers=headers)
             self.assertEqual(r_after.status_code, 401)
@@ -332,7 +366,7 @@ class LegalPropRequirementsTestSuite(unittest.IsolatedAsyncioTestCase):
                     "POST",
                     "/api/v1/chat/stream",
                     json={"query": "¿Pueden pedir depósito en efectivo en arriendo?", "ai_provider": "auto"},
-                    headers={"X-Guest-Session": "bench_ttft"},
+                    headers={"X-Guest-Session": "bench_ttft_session_01"},
                 ) as resp:
                     self.assertEqual(resp.status_code, 200)
                     async for line in resp.aiter_lines():
@@ -350,7 +384,7 @@ class LegalPropRequirementsTestSuite(unittest.IsolatedAsyncioTestCase):
                         "POST",
                         "/api/v1/chat/stream",
                         json={"query": f"Consulta concurrente #{idx} sobre depósito Ley 820", "ai_provider": "auto"},
-                        headers={"X-Guest-Session": f"bench_conc_{idx}"},
+                        headers={"X-Guest-Session": f"bench_conc_session_{idx:03d}"},
                     ) as r:
                         if r.status_code != 200:
                             return False
@@ -448,6 +482,139 @@ class LegalPropRequirementsTestSuite(unittest.IsolatedAsyncioTestCase):
             # Verificar soporte HEAD / para sondas de salud de Render (cero HTTP 405)
             head_resp = await client.head("/")
             self.assertEqual(head_resp.status_code, 200)
+
+    async def test_10_security_hardening_regressions(self):
+        import io
+        import zipfile
+        from fastapi import HTTPException
+        from app.core.rate_limiter import SlidingWindowRateLimiter, login_lockout_tracker
+        from app.core.config import settings
+        from main import seed_master_user
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            # 1. Aislamiento estricto de invitados: nunca compartir bucket 'anonymous'
+            r_conv_a = await client.post(
+                "/api/v1/conversations",
+                json={"title": "Chat Privado Invitado A", "category": "arriendo"},
+                headers={"X-Guest-Session": "guest_iso_alpha_123456"},
+            )
+            self.assertEqual(r_conv_a.status_code, 201, r_conv_a.text)
+            conv_a_id = r_conv_a.json()["id"]
+
+            # Sin cabecera ni con 'anonymous' puede leer la conversación de A
+            r_no_hdr = await client.get(f"/api/v1/conversations/{conv_a_id}")
+            self.assertEqual(r_no_hdr.status_code, 403)
+            r_anon = await client.get(
+                f"/api/v1/conversations/{conv_a_id}",
+                headers={"X-Guest-Session": "anonymous"},
+            )
+            self.assertEqual(r_anon.status_code, 403)
+
+            # Subir documento sin sesión válida de invitado -> 400 (nunca 'anonymous')
+            r_up_anon = await client.post(
+                "/api/v1/documents/upload",
+                files={"file": ("nota.txt", b"Contenido privado de prueba", "text/plain")},
+                data={"category": "arriendo"},
+                headers={"X-Guest-Session": "anonymous"},
+            )
+            self.assertEqual(r_up_anon.status_code, 400)
+
+            # 2. Validación estricta de category (rechaza XSS <script>)
+            r_xss_chat = await client.post(
+                "/api/v1/chat/query",
+                json={"query": "¿Cuál es el preaviso?", "category": "<script>x</script>"},
+                headers={"X-Guest-Session": "guest_iso_alpha_123456"},
+            )
+            self.assertEqual(r_xss_chat.status_code, 422)
+            r_xss_conv = await client.post(
+                "/api/v1/conversations",
+                json={"title": "Prueba", "category": "<script>x</script>"},
+                headers={"X-Guest-Session": "guest_iso_alpha_123456"},
+            )
+            self.assertEqual(r_xss_conv.status_code, 422)
+
+            # 3. Rechazo limpio de .xls antiguo y defensa contra zip bomb en .docx
+            r_xls = await client.post(
+                "/api/v1/documents/upload",
+                files={"file": ("tabla.xls", b"dummy", "application/vnd.ms-excel")},
+                data={"category": "contrato"},
+                headers={"X-Guest-Session": "guest_iso_alpha_123456"},
+            )
+            self.assertEqual(r_xls.status_code, 422)
+            self.assertIn(".xlsx", r_xls.json()["detail"])
+
+            bomb_buf = io.BytesIO()
+            with zipfile.ZipFile(bomb_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("word/document.xml", b"A" * (6 * 1024 * 1024))
+            r_bomb = await client.post(
+                "/api/v1/documents/upload",
+                files={
+                    "file": (
+                        "bomb.docx",
+                        bomb_buf.getvalue(),
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
+                },
+                data={"category": "contrato"},
+                headers={"X-Guest-Session": "guest_iso_alpha_123456"},
+            )
+            self.assertEqual(r_bomb.status_code, 422)
+
+            # 4. Migración de conversaciones de invitado al registrarse
+            reg_payload = {
+                "full_name": "Carlos Migracion",
+                "email": "carlos.migracion@example.com",
+                "password": "PasswordSegura2026!",
+                "role": "propietario",
+                "security_questions": [
+                    {"question": "¿Cuál es el nombre de tu primera mascota?", "answer": "toby"},
+                    {"question": "¿En qué ciudad naciste?", "answer": "cali"},
+                    {"question": "¿Cómo se llamaba tu colegio?", "answer": "central"},
+                ],
+                "accepted_privacy_policy": True,
+            }
+            r_reg = await client.post("/api/v1/auth/register", json=reg_payload)
+            self.assertEqual(r_reg.status_code, 201, r_reg.text)
+            c_token = r_reg.json()["access_token"]
+            r_mig = await client.post(
+                "/api/v1/auth/migrate-guest",
+                headers={
+                    "Authorization": f"Bearer {c_token}",
+                    "X-Guest-Session": "guest_iso_alpha_123456",
+                },
+            )
+            self.assertEqual(r_mig.status_code, 200, r_mig.text)
+            self.assertGreaterEqual(r_mig.json()["migrated_conversations"], 1)
+
+            # 5. Bloqueo por (correo, IP): bloquear IP A no bloquea a la víctima en IP B
+            login_lockout_tracker.clear("victima@example.com", "ip_atacante")
+            login_lockout_tracker.clear("victima@example.com", "ip_victima")
+            for _ in range(5):
+                login_lockout_tracker.register_failure("victima@example.com", "ip_atacante")
+            self.assertIsNotNone(login_lockout_tracker.check_locked("victima@example.com", "ip_atacante"))
+            self.assertIsNone(login_lockout_tracker.check_locked("victima@example.com", "ip_victima"))
+
+            # 6. Rate limiter activo con Retry-After cuando bypass_in_test=False
+            rl = SlidingWindowRateLimiter()
+            rl.check("test:key", limit=2, window_seconds=60, bypass_in_test=False)
+            rl.check("test:key", limit=2, window_seconds=60, bypass_in_test=False)
+            with self.assertRaises(HTTPException) as ctx:
+                rl.check("test:key", limit=2, window_seconds=60, bypass_in_test=False)
+            self.assertEqual(ctx.exception.status_code, 429)
+            self.assertIn("Retry-After", ctx.exception.headers)
+
+            # 7. Protección anti-secuestro de cuenta reservada (MASTER_ADMIN_EMAIL)
+            with patch.object(settings, "MASTER_ADMIN_EMAIL", "carlos.migracion@example.com"), \
+                 patch.object(settings, "MASTER_ADMIN_PASSWORD", "MasterSuperSecret2026!"):
+                seed_master_user()
+                # Carlos (usuario regular ya existente) NO debe haber sido promovido
+                r_me_c = await client.get(
+                    "/api/v1/auth/me",
+                    headers={"Authorization": f"Bearer {c_token}"},
+                )
+                self.assertEqual(r_me_c.status_code, 200)
+                self.assertEqual(r_me_c.json()["role"], "propietario")
 
 
 if __name__ == "__main__":

@@ -1,24 +1,26 @@
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
+
+ValidDocCategory = Literal["arriendo", "propiedad_horizontal", "manual_interno", "contrato", "general"]
 
 
 class DocumentUploadRequest(BaseModel):
-    title: str = Field(..., description="Título de la norma o reglamento")
-    category: str = Field(
+    title: str = Field(..., min_length=1, max_length=255, description="Título de la norma o reglamento")
+    category: ValidDocCategory = Field(
         ...,
         description="Categoría: 'arriendo' | 'propiedad_horizontal' | 'manual_interno' | 'contrato' | 'general'"
     )
-    norma_numero: Optional[str] = Field(None, description="Ejemplo: 'Ley 820 de 2003' o 'Reglamento Conjunto Residencial'")
-    jurisdiction: str = Field("Colombia", description="País o jurisdicción")
-    year: Optional[int] = Field(None, description="Año de promulgación")
-    content: Optional[str] = Field(None, description="Contenido de texto directo en Markdown o texto plano")
+    norma_numero: Optional[str] = Field(None, max_length=255, description="Ejemplo: 'Ley 820 de 2003' o 'Reglamento Conjunto Residencial'")
+    jurisdiction: str = Field("Colombia", max_length=80, description="País o jurisdicción")
+    year: Optional[int] = Field(None, ge=1886, le=2100, description="Año de promulgación")
+    content: Optional[str] = Field(None, max_length=400_000, description="Contenido de texto directo en Markdown o texto plano")
     is_public: bool = Field(False, description="Indica si el documento pertenece al corpus común")
 
 
 class DocumentUpdateRequest(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=255)
-    category: Optional[str] = None
+    category: Optional[ValidDocCategory] = None
     is_public: Optional[bool] = None
 
 

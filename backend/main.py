@@ -28,6 +28,7 @@ from app.core.security import (
     hash_password,
     hash_recovery_code,
     hash_security_answer,
+    verify_password,
 )
 from app.db.database import DB_ENGINE_NAME, SessionLocal, init_db
 from app.models.db_models import Conversation, DocumentRecord, User
@@ -87,10 +88,17 @@ def seed_master_user() -> None:
             db.commit()
             logger.info(f"Cuenta Master inicializada correctamente para '{email}'.")
         else:
-            changed = False
             if user.role != "master":
-                user.role = "master"
+                logger.warning(
+                    f"Cuenta existente '{email}' no tiene rol Master; no se promueve automáticamente por seguridad."
+                )
+                return
+            changed = False
+            if not verify_password(password, user.password_hash):
+                user.password_hash = hash_password(password)
+                user.token_version = (user.token_version or 1) + 1
                 changed = True
+                logger.info(f"Contraseña Master sincronizada desde variables de entorno para '{email}'.")
             if full_name and user.full_name != full_name:
                 user.full_name = full_name
                 changed = True
@@ -298,7 +306,11 @@ def rehydrate_documents_from_db() -> None:
                 else (
                     f"user:{doc.owner_id}"
                     if doc.owner_id
-                    else f"guest:{doc.guest_session_id or 'anonymous'}"
+                    else (
+                        f"guest:{doc.guest_session_id}"
+                        if doc.guest_session_id and doc.guest_session_id != "anonymous"
+                        else f"ephemeral:{doc.id}"
+                    )
                 )
             )
             chunks = rag_engine.ingest_document(
@@ -341,6 +353,7 @@ def purge_expired_guest_sessions(max_age_hours: int = 24) -> None:
                 DocumentRecord.is_public == False,  # noqa: E712
                 DocumentRecord.created_at < cutoff,
             )
+            .limit(200)
             .all()
         )
         for d in old_docs:
@@ -353,6 +366,7 @@ def purge_expired_guest_sessions(max_age_hours: int = 24) -> None:
                 Conversation.user_id.is_(None),
                 Conversation.updated_at < cutoff,
             )
+            .limit(200)
             .all()
         )
         for c in old_convs:
@@ -395,21 +409,23 @@ async def lifespan(app: FastAPI):
     logger.info("Cerrando LegalProp AI Backend...")
 
 
+_is_prod = settings.ENVIRONMENT == "production"
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
     description=settings.DESCRIPTION,
-    openapi_url=f"{settings.API_V1_STR}/openapi.json",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    openapi_url=None if _is_prod else f"{settings.API_V1_STR}/openapi.json",
+    docs_url=None if _is_prod else "/docs",
+    redoc_url=None if _is_prod else "/redoc",
     lifespan=lifespan,
 )
 
-# Configuración de CORS (soporta desarrollo local y despliegues en Render *.onrender.com)
+# Configuración de CORS estricta (solo orígenes propios y dominio oficial de Render del proyecto)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.parsed_cors_origins or ["http://localhost:5173"],
-    allow_origin_regex=r"https://.*\.onrender\.com",
+    allow_origin_regex=r"https://legalprop-ai(?:-[a-z0-9-]+)?\.onrender\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -418,6 +434,18 @@ app.add_middleware(
 
 class SecurityHeadersMiddleware:
     """Middleware ASGI puro (cero buffering en SSE) para cabeceras HTTP de endurecimiento."""
+
+    CSP_POLICY = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com data:; "
+        "img-src 'self' data: blob:; "
+        "connect-src 'self' https://legalprop.site https://www.legalprop.site https://legalprop-ai.onrender.com; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    ).encode("ascii")
 
     def __init__(self, app):
         self.app = app
@@ -437,7 +465,10 @@ class SecurityHeadersMiddleware:
                     (b"x-frame-options", b"DENY"),
                     (b"referrer-policy", b"strict-origin-when-cross-origin"),
                     (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+                    (b"content-security-policy", self.CSP_POLICY),
                 ])
+                if _is_prod:
+                    headers.append((b"strict-transport-security", b"max-age=31536000; includeSubDomains"))
                 if path.startswith("/assets/"):
                     headers.append((b"cache-control", b"public, max-age=31536000, immutable"))
                 message = {**message, "headers": headers}

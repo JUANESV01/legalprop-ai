@@ -25,11 +25,14 @@ class DisambiguationInfo(BaseModel):
     quick_options: List[DisambiguationOption] = Field(default_factory=list)
 
 
+ValidCategory = Literal["arriendo", "propiedad_horizontal", "manual_interno", "contrato", "general"]
+
+
 class ChatQueryRequest(BaseModel):
     query: str = Field(..., min_length=2, max_length=3000, description="Pregunta jurídica del usuario")
-    category: Optional[str] = Field(
+    category: Optional[ValidCategory] = Field(
         None,
-        description="Filtro opcional: 'arriendo', 'propiedad_horizontal', 'manual_interno' o None para todo"
+        description="Filtro opcional: 'arriendo', 'propiedad_horizontal', 'manual_interno', 'contrato', 'general' o None"
     )
     conversation_id: Optional[str] = Field(None, description="ID de sesión para mantener el hilo")
     document_ids: Optional[List[str]] = Field(

@@ -1,6 +1,11 @@
+import logging
 import secrets
 from typing import List, Union
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_DEFAULT_JWT_SECRET = "legalprop-ai-jwt-secret-key-change-in-production-2026"
+_cfg_logger = logging.getLogger("legalprop.config")
 
 
 class Settings(BaseSettings):
@@ -40,7 +45,22 @@ class Settings(BaseSettings):
     MASTER_ADMIN_NAME: str = "Administrador Master"
 
     # CORS
-    CORS_ORIGINS: Union[str, List[str]] = "http://localhost:5173,http://127.0.0.1:5173"
+    CORS_ORIGINS: Union[str, List[str]] = (
+        "http://localhost:5173,http://127.0.0.1:5173,https://legalprop.site,https://www.legalprop.site"
+    )
+
+    @model_validator(mode="after")
+    def _enforce_production_jwt_secret(self) -> "Settings":
+        secret = (self.JWT_SECRET_KEY or "").strip()
+        if self.ENVIRONMENT == "production" and (
+            not secret or secret == _DEFAULT_JWT_SECRET or secret.startswith("cambia_") or len(secret) < 24
+        ):
+            _cfg_logger.warning(
+                "JWT_SECRET_KEY no estaba configurada con un valor seguro en producción; "
+                "generando clave efímera aleatoria en memoria. Configura JWT_SECRET_KEY en Render."
+            )
+            self.JWT_SECRET_KEY = secrets.token_urlsafe(48)
+        return self
 
     # Search APIs (optional — el sistema usa Google Search Grounding + DuckDuckGo gratuito por defecto)
     SERPER_API_KEY: str = ""

@@ -96,6 +96,16 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=8, max_length=72)
 
 
+class ChangePasswordResponse(BaseModel):
+    status: str = "success"
+    message: str
+    access_token: Optional[str] = None
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str = Field(..., min_length=1, max_length=72)
+
+
 class SecurityLogItem(BaseModel):
     id: str
     action: str

@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 from app.models.schemas.chat import CitationSchema
@@ -6,6 +7,7 @@ MIN_CANON_COP = 100_000
 MAX_CANON_COP = 200_000_000
 MIN_COMERCIAL_COP = 10_000_000
 MAX_COMERCIAL_COP = 50_000_000_000
+MAX_REAJUSTE_YEAR = max(2030, datetime.now().year + 2)
 
 
 class IPCCalcRequest(BaseModel):
@@ -15,7 +17,12 @@ class IPCCalcRequest(BaseModel):
         le=MAX_CANON_COP,
         description="Valor mensual actual del canon de arrendamiento en COP ($100.000 a $200.000.000)",
     )
-    anio_reajuste: int = Field(2026, ge=2021, le=2030, description="Año calendario en que se aplica el reajuste")
+    anio_reajuste: int = Field(
+        default_factory=lambda: datetime.now().year,
+        ge=2021,
+        le=MAX_REAJUSTE_YEAR,
+        description="Año calendario en que se aplica el reajuste",
+    )
     ipc_personalizado: Optional[float] = Field(
         None,
         ge=0.0,
@@ -56,16 +63,16 @@ class IPCCalcResponse(BaseModel):
 
 
 class PDFReportRequest(BaseModel):
-    question: str = Field(..., min_length=1, description="Consulta formulada por el usuario")
-    answer: str = Field(..., min_length=1, description="Respuesta jurídica generada")
-    citations: List[CitationSchema] = Field(default_factory=list)
-    category: Optional[str] = None
-    user_name: Optional[str] = None
-    conversation_title: Optional[str] = None
+    question: str = Field(..., min_length=1, max_length=3000, description="Consulta formulada por el usuario")
+    answer: str = Field(..., min_length=1, max_length=30000, description="Respuesta jurídica generada")
+    citations: List[CitationSchema] = Field(default_factory=list, max_length=20)
+    category: Optional[str] = Field(None, max_length=60)
+    user_name: Optional[str] = Field(None, max_length=120)
+    conversation_title: Optional[str] = Field(None, max_length=200)
 
 
 class DraftExportRequest(BaseModel):
     title: str = Field("Borrador Legal", min_length=1, max_length=160, description="Título del contrato o documento")
-    content: str = Field(..., min_length=1, description="Texto del borrador redactado por LegalProp AI")
+    content: str = Field(..., min_length=1, max_length=40000, description="Texto del borrador redactado por LegalProp AI")
     format: Literal["docx", "pdf", "txt"] = Field("docx", description="Formato de descarga: docx, pdf o txt")
-    user_name: Optional[str] = None
+    user_name: Optional[str] = Field(None, max_length=120)

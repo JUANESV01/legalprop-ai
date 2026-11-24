@@ -7,6 +7,7 @@ en entornos con disco efímero (Render) y permite al rol Master publicar documen
 en la base común global para todos los usuarios.
 """
 
+import asyncio
 import hashlib
 import io
 import logging
@@ -18,6 +19,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from app.core.config import settings
+from app.core.rate_limiter import get_trusted_client_ip, rate_limiter
 from app.core.security import (
     anonymize_client_ip,
     get_guest_session_id,
@@ -40,6 +42,13 @@ from app.services.rag_engine import rag_engine
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+HTTP_422 = getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", 422)
+VALID_CATEGORIES = {"arriendo", "propiedad_horizontal", "manual_interno", "contrato", "general"}
+MAX_PDF_PAGES = 250
+ZIP_MAX_UNCOMPRESSED_BYTES = 80 * 1024 * 1024  # 80 MB
+ZIP_MAX_FILES = 2000
+ZIP_MAX_RATIO = 100
+
 IMAGE_MIME_MAP = {
     "png": "image/png",
     "jpg": "image/jpeg",
@@ -48,8 +57,66 @@ IMAGE_MIME_MAP = {
 }
 
 
+def _validate_category(category: str) -> str:
+    clean = (category or "").strip().lower()
+    if clean not in VALID_CATEGORIES:
+        raise HTTPException(
+            status_code=HTTP_422,
+            detail=f"Categoría inválida. Valores permitidos: {', '.join(sorted(VALID_CATEGORIES))}.",
+        )
+    return clean
+
+
+def _validate_zip_safety(content_bytes: bytes) -> None:
+    """Protege contra zip bombs y archivos comprimidos maliciosos en .docx, .xlsx y .odt."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(content_bytes)) as zf:
+            infos = zf.infolist()
+            if len(infos) > ZIP_MAX_FILES:
+                raise HTTPException(
+                    status_code=HTTP_422,
+                    detail="El archivo contiene demasiados elementos internos y fue rechazado por seguridad.",
+                )
+            total_uncompressed = sum(max(0, info.file_size) for info in infos)
+            if total_uncompressed > ZIP_MAX_UNCOMPRESSED_BYTES:
+                raise HTTPException(
+                    status_code=HTTP_422,
+                    detail="El contenido descomprimido del archivo supera el límite de seguridad permitido.",
+                )
+            compressed_size = max(len(content_bytes), 1)
+            if (total_uncompressed / compressed_size) > ZIP_MAX_RATIO and total_uncompressed > 5 * 1024 * 1024:
+                raise HTTPException(
+                    status_code=HTTP_422,
+                    detail="El archivo presenta una relación de compresión anómala y fue rechazado por seguridad.",
+                )
+    except HTTPException:
+        raise
+    except zipfile.BadZipFile:
+        raise HTTPException(
+            status_code=HTTP_422,
+            detail="El archivo está dañado o no corresponde a un formato válido.",
+        )
+
+
+async def _read_upload_bounded(file: UploadFile, max_bytes: int) -> bytes:
+    """Lee el archivo por bloques de 64 KB abortando antes de saturar la memoria RAM."""
+    chunks = bytearray()
+    chunk_size = 65536
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        chunks.extend(chunk)
+        if len(chunks) > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"El archivo supera el tamaño máximo permitido ({settings.MAX_UPLOAD_SIZE_MB} MB).",
+            )
+    return bytes(chunks)
+
+
 def extract_text_from_file(filename: str, content_bytes: bytes) -> str:
-    """Extrae texto real de PDF, DOCX, XLSX/XLS, ODT, TXT, MD, CSV e imágenes (OCR)."""
+    """Extrae texto real de PDF, DOCX, XLSX, ODT, TXT, MD, CSV e imágenes (OCR)."""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in (filename or "") else ""
 
     if ext in ["txt", "md", "csv"]:
@@ -63,7 +130,7 @@ def extract_text_from_file(filename: str, content_bytes: bytes) -> str:
         text = content_bytes.decode("utf-8", errors="replace").strip()
         if not text:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=HTTP_422,
                 detail="El archivo de texto no contiene contenido legible.",
             )
         return text
@@ -73,14 +140,20 @@ def extract_text_from_file(filename: str, content_bytes: bytes) -> str:
             import pypdf
 
             reader = pypdf.PdfReader(io.BytesIO(content_bytes))
+            if len(reader.pages) > MAX_PDF_PAGES:
+                raise HTTPException(
+                    status_code=HTTP_422,
+                    detail=f"El PDF supera el máximo permitido de {MAX_PDF_PAGES} páginas.",
+                )
             pages_text = []
             for idx, page in enumerate(reader.pages):
                 text = page.extract_text() or ""
                 if text.strip():
                     pages_text.append(f"--- [Página {idx + 1}] ---\n{text.strip()}")
             if not pages_text:
-                raise ValueError(
-                    "El PDF no contiene capas de texto seleccionable (puede ser un escaneo de solo imagen)."
+                raise HTTPException(
+                    status_code=HTTP_422,
+                    detail="El PDF no contiene texto seleccionable (puede ser un escaneo de solo imagen).",
                 )
             return "\n\n".join(pages_text)
         except HTTPException:
@@ -88,11 +161,12 @@ def extract_text_from_file(filename: str, content_bytes: bytes) -> str:
         except Exception as e:
             logger.error(f"Error procesando PDF '{filename}': {e}")
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"No se pudo extraer texto del PDF ({filename}): {str(e)}",
+                status_code=HTTP_422,
+                detail="No se pudo leer el archivo PDF. Verifica que no esté protegido con contraseña ni dañado.",
             )
 
     if ext == "docx":
+        _validate_zip_safety(content_bytes)
         try:
             import docx
 
@@ -104,22 +178,33 @@ def extract_text_from_file(filename: str, content_bytes: bytes) -> str:
                     if cells:
                         parts.append(" | ".join(cells))
             if not parts:
-                raise ValueError("El archivo Word (.docx) no contiene texto extraíble.")
+                raise HTTPException(
+                    status_code=HTTP_422,
+                    detail="El archivo Word (.docx) no contiene texto extraíble.",
+                )
             return "\n\n".join(parts)
         except HTTPException:
             raise
         except Exception as e:
             logger.error(f"Error procesando DOCX '{filename}': {e}")
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Error al leer documento Word (.docx): {str(e)}",
+                status_code=HTTP_422,
+                detail="No se pudo leer el documento Word (.docx). Verifica que el archivo no esté corrupto.",
             )
 
-    if ext in ["xlsx", "xls"]:
+    if ext == "xls":
+        raise HTTPException(
+            status_code=HTTP_422,
+            detail="El formato Excel antiguo (.xls) no es compatible. Guárdalo como .xlsx o .csv e inténtalo de nuevo.",
+        )
+
+    if ext == "xlsx":
+        _validate_zip_safety(content_bytes)
+        wb = None
         try:
             import openpyxl
 
-            wb = openpyxl.load_workbook(io.BytesIO(content_bytes), data_only=True)
+            wb = openpyxl.load_workbook(io.BytesIO(content_bytes), data_only=True, read_only=True)
             sheet_text = []
             for name in wb.sheetnames:
                 ws = wb[name]
@@ -131,41 +216,61 @@ def extract_text_from_file(filename: str, content_bytes: bytes) -> str:
                         if cells:
                             sheet_text.append(" | ".join(cells))
             if not sheet_text:
-                raise ValueError("El libro de Excel está vacío o no tiene celdas con datos.")
+                raise HTTPException(
+                    status_code=HTTP_422,
+                    detail="El libro de Excel está vacío o no tiene celdas con datos.",
+                )
             return "\n".join(sheet_text)
         except HTTPException:
             raise
         except Exception as e:
             logger.error(f"Error procesando Excel '{filename}': {e}")
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Error al procesar archivo Excel ({filename}): {str(e)}",
+                status_code=HTTP_422,
+                detail="No se pudo procesar el archivo Excel (.xlsx). Verifica que no esté cifrado ni corrupto.",
             )
+        finally:
+            if wb is not None:
+                try:
+                    wb.close()
+                except Exception:
+                    pass
 
     if ext == "odt":
+        _validate_zip_safety(content_bytes)
         try:
             with zipfile.ZipFile(io.BytesIO(content_bytes)) as z:
                 xml_data = z.read("content.xml")
                 root = ET.fromstring(xml_data)
                 text = " ".join(t.strip() for t in root.itertext() if t and t.strip())
                 if not text:
-                    raise ValueError("El archivo ODT está vacío.")
+                    raise HTTPException(
+                        status_code=HTTP_422,
+                        detail="El archivo ODT está vacío.",
+                    )
                 return text
         except HTTPException:
             raise
         except Exception as e:
             logger.error(f"Error procesando ODT '{filename}': {e}")
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Error al leer archivo ODT: {str(e)}",
+                status_code=HTTP_422,
+                detail="No se pudo leer el archivo ODT. Verifica que el formato sea válido.",
             )
 
     if ext in IMAGE_MIME_MAP:
-        return gemini_service.extract_text_from_image(
-            image_bytes=content_bytes,
-            mime_type=IMAGE_MIME_MAP[ext],
-            filename=filename,
-        )
+        try:
+            return gemini_service.extract_text_from_image(
+                image_bytes=content_bytes,
+                mime_type=IMAGE_MIME_MAP[ext],
+                filename=filename,
+            )
+        except Exception as e:
+            logger.error(f"Error ejecutando OCR sobre '{filename}': {e}")
+            raise HTTPException(
+                status_code=HTTP_422,
+                detail="No fue posible extraer texto de la imagen en este momento. Intenta con una imagen más nítida o en formato PDF/DOCX.",
+            )
 
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
@@ -181,13 +286,16 @@ def extract_text_from_file(filename: str, content_bytes: bytes) -> str:
     response_model=IngestResult,
     summary="Ingestar Texto Normativo Directo",
 )
-def ingest_text_document(
+async def ingest_text_document(
     payload: DocumentUploadRequest,
     request: Request,
     current_user: Optional[User] = Depends(get_optional_user),
     guest_session_id: Optional[str] = Depends(get_guest_session_id),
     db: Session = Depends(get_db),
 ):
+    client_key = f"u:{current_user.id}" if current_user else f"ip:{get_trusted_client_ip(request)}"
+    rate_limiter.check(f"docs:upload:{client_key}", limit=8, window_seconds=60)
+
     if not payload.content or not payload.content.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -203,11 +311,18 @@ def ingest_text_document(
             )
         publish_global = True
 
+    if not publish_global and not current_user and not guest_session_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Se requiere iniciar sesión o contar con una sesión temporal válida (X-Guest-Session) para subir documentos.",
+        )
+
     doc_id = str(uuid.uuid4())[:12]
     owner_scope = "public" if publish_global else resolve_owner_scope(current_user, guest_session_id)
     content_clean = payload.content.strip()
 
-    chunks_count = rag_engine.ingest_document(
+    chunks_count = await asyncio.to_thread(
+        rag_engine.ingest_document,
         doc_id=doc_id,
         title=payload.title,
         category=payload.category,
@@ -222,7 +337,7 @@ def ingest_text_document(
     doc_rec = DocumentRecord(
         id=doc_id,
         owner_id=current_user.id if current_user else None,
-        guest_session_id=None if (current_user or publish_global) else (guest_session_id or "anonymous"),
+        guest_session_id=None if (current_user or publish_global) else guest_session_id,
         title=payload.title,
         filename=f"{payload.title}.txt",
         file_type="txt",
@@ -237,18 +352,27 @@ def ingest_text_document(
         content_hash=hashlib.sha256(content_clean.encode("utf-8")).hexdigest(),
         is_public=publish_global,
     )
-    db.add(doc_rec)
-    if current_user:
-        db.add(
-            AuditLog(
-                user_id=current_user.id,
-                action="GLOBAL_DOC_INGEST" if publish_global else "DOCUMENT_INGEST",
-                status="SUCCESS",
-                ip_hash=anonymize_client_ip(request),
-                details=f"{payload.title} ({chunks_count} chunks)",
+    try:
+        db.add(doc_rec)
+        if current_user:
+            db.add(
+                AuditLog(
+                    user_id=current_user.id,
+                    action="GLOBAL_DOC_INGEST" if publish_global else "DOCUMENT_INGEST",
+                    status="SUCCESS",
+                    ip_hash=anonymize_client_ip(request),
+                    details=f"{payload.title} ({chunks_count} chunks)",
+                )
             )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        rag_engine.delete_document(doc_id)
+        logger.error(f"Error guardando documento en BD tras indexar {doc_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="No se pudo guardar el documento en la base de datos. Inténtalo nuevamente.",
         )
-    db.commit()
 
     return IngestResult(
         document_id=doc_id,
@@ -284,6 +408,11 @@ async def upload_document_file(
     guest_session_id: Optional[str] = Depends(get_guest_session_id),
     db: Session = Depends(get_db),
 ):
+    client_key = f"u:{current_user.id}" if current_user else f"ip:{get_trusted_client_ip(request)}"
+    rate_limiter.check(f"docs:upload:{client_key}", limit=8, window_seconds=60)
+
+    clean_category = _validate_category(category)
+
     publish_global = False
     if is_public:
         if not current_user or current_user.role != "master":
@@ -293,38 +422,40 @@ async def upload_document_file(
             )
         publish_global = True
 
-    content_bytes = await file.read()
+    if not publish_global and not current_user and not guest_session_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Se requiere iniciar sesión o contar con una sesión temporal válida (X-Guest-Session) para subir archivos.",
+        )
+
+    max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    content_bytes = await _read_upload_bounded(file, max_bytes)
     if len(content_bytes) == 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="El archivo proporcionado está vacío (0 bytes).",
         )
 
-    max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
-    if len(content_bytes) > max_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"El archivo supera el tamaño máximo permitido ({settings.MAX_UPLOAD_SIZE_MB} MB).",
-        )
-
-    filename = file.filename or "documento.txt"
+    filename = (file.filename or "documento.txt")[:255]
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
 
-    content_str = extract_text_from_file(filename, content_bytes)
+    # Ejecutar extracción pesada (PDF/DOCX/XLSX/OCR) en hilo de trabajo sin bloquear el event loop
+    content_str = await asyncio.to_thread(extract_text_from_file, filename, content_bytes)
     doc_title = (
-        (title or "").strip()
-        or filename.rsplit(".", 1)[0].replace("_", " ").replace("-", " ").strip().title()
+        (title or "").strip()[:220]
+        or filename.rsplit(".", 1)[0].replace("_", " ").replace("-", " ").strip().title()[:220]
     )
 
     doc_id = str(uuid.uuid4())[:12]
     owner_scope = "public" if publish_global else resolve_owner_scope(current_user, guest_session_id)
 
-    chunks_count = rag_engine.ingest_document(
+    chunks_count = await asyncio.to_thread(
+        rag_engine.ingest_document,
         doc_id=doc_id,
         title=doc_title,
-        category=category,
+        category=clean_category,
         content=content_str,
-        norma_numero=norma_numero or doc_title,
+        norma_numero=(norma_numero or doc_title)[:180],
         owner_scope=owner_scope,
         is_public=publish_global,
         filename=filename,
@@ -332,7 +463,7 @@ async def upload_document_file(
 
     if chunks_count == 0:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=HTTP_422,
             detail="No se pudo indexar contenido útil del archivo.",
         )
 
@@ -340,12 +471,12 @@ async def upload_document_file(
     doc_rec = DocumentRecord(
         id=doc_id,
         owner_id=current_user.id if current_user else None,
-        guest_session_id=None if (current_user or publish_global) else (guest_session_id or "anonymous"),
+        guest_session_id=None if (current_user or publish_global) else guest_session_id,
         title=doc_title,
         filename=filename,
         file_type=ext,
-        category=category,
-        norma_numero=norma_numero or doc_title,
+        category=clean_category,
+        norma_numero=(norma_numero or doc_title)[:180],
         chunks_count=chunks_count,
         file_size_bytes=len(content_bytes),
         content_preview=content_str[:650],
@@ -355,25 +486,34 @@ async def upload_document_file(
         content_hash=hashlib.sha256(content_bytes).hexdigest(),
         is_public=publish_global,
     )
-    db.add(doc_rec)
-    if current_user:
-        db.add(
-            AuditLog(
-                user_id=current_user.id,
-                action="GLOBAL_DOC_UPLOAD" if publish_global else "DOCUMENT_UPLOAD",
-                status="SUCCESS",
-                ip_hash=anonymize_client_ip(request),
-                details=f"{filename} ({ext}, {chunks_count} chunks, global={publish_global})",
+    try:
+        db.add(doc_rec)
+        if current_user:
+            db.add(
+                AuditLog(
+                    user_id=current_user.id,
+                    action="GLOBAL_DOC_UPLOAD" if publish_global else "DOCUMENT_UPLOAD",
+                    status="SUCCESS",
+                    ip_hash=anonymize_client_ip(request),
+                    details=f"{filename} ({ext}, {chunks_count} chunks, global={publish_global})",
+                )
             )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        rag_engine.delete_document(doc_id)
+        logger.error(f"Error guardando archivo subido en BD tras indexar {doc_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="No se pudo registrar el documento en la base de datos. Inténtalo nuevamente.",
         )
-    db.commit()
 
     return IngestResult(
         document_id=doc_id,
         title=doc_title,
         filename=filename,
         file_type=ext,
-        category=category,
+        category=clean_category,
         chunks_created=chunks_count,
         is_public=publish_global,
         status="success",
@@ -446,7 +586,7 @@ def list_documents(
     response_model=DocumentSummary,
     include_in_schema=False,
 )
-def update_document_master(
+async def update_document_master(
     doc_id: str,
     payload: DocumentUpdateRequest,
     request: Request,
@@ -462,7 +602,7 @@ def update_document_master(
         doc_rec.title = payload.title.strip()
         changed_index = True
     if payload.category is not None:
-        doc_rec.category = payload.category.strip().lower()
+        doc_rec.category = _validate_category(payload.category)
         changed_index = True
     if payload.is_public is not None and payload.is_public != doc_rec.is_public:
         doc_rec.is_public = payload.is_public
@@ -470,7 +610,8 @@ def update_document_master(
 
     if changed_index and doc_rec.extracted_content:
         new_scope = "public" if doc_rec.is_public else (f"user:{doc_rec.owner_id}" if doc_rec.owner_id else "public")
-        doc_rec.chunks_count = rag_engine.ingest_document(
+        doc_rec.chunks_count = await asyncio.to_thread(
+            rag_engine.ingest_document,
             doc_id=doc_rec.id,
             title=doc_rec.title,
             category=doc_rec.category,
@@ -540,7 +681,12 @@ def delete_document(
         is_owner = (
             is_master
             or (current_user and doc_rec.owner_id == current_user.id)
-            or (not current_user and guest_session_id and doc_rec.guest_session_id == guest_session_id)
+            or (
+                not current_user
+                and bool(guest_session_id)
+                and bool(doc_rec.guest_session_id)
+                and doc_rec.guest_session_id == guest_session_id
+            )
         )
         if not is_owner:
             raise HTTPException(

@@ -28,6 +28,12 @@ const API_BASE_URL =
 const TOKEN_KEY = 'legalprop_access_token';
 const GUEST_SESSION_KEY = 'legalprop_guest_session_id';
 
+let unauthorizedCallback: (() => void) | null = null;
+
+export function setOnUnauthorized(cb: (() => void) | null): void {
+  unauthorizedCallback = cb;
+}
+
 export function getStoredToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -60,6 +66,10 @@ function buildHeaders(extra?: Record<string, string>): Record<string, string> {
 }
 
 async function parseError(response: Response, fallbackMsg: string): Promise<Error> {
+  if (response.status === 401 && getStoredToken()) {
+    setStoredToken(null);
+    unauthorizedCallback?.();
+  }
   const errData = await response.json().catch(() => null);
   const detail = errData?.detail || fallbackMsg || `Error ${response.status}`;
   return new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
@@ -177,13 +187,33 @@ export const apiService = {
     return response.json();
   },
 
-  async changePassword(current_password: string, new_password: string): Promise<{ status: string; message: string }> {
+  async changePassword(
+    current_password: string,
+    new_password: string
+  ): Promise<{ status: string; message: string; access_token?: string }> {
     const response = await fetch(`${API_BASE_URL}/auth/change-password`, {
       method: 'POST',
       headers: buildHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ current_password, new_password }),
     });
     if (!response.ok) throw await parseError(response, 'Error al cambiar contraseña');
+    const data = await response.json();
+    if (data?.access_token) {
+      setStoredToken(data.access_token);
+    }
+    return data;
+  },
+
+  async migrateGuestSession(): Promise<{
+    status: string;
+    migrated_conversations: number;
+    migrated_documents: number;
+  }> {
+    const response = await fetch(`${API_BASE_URL}/auth/migrate-guest`, {
+      method: 'POST',
+      headers: buildHeaders(),
+    });
+    if (!response.ok) throw await parseError(response, 'No se pudo migrar el historial temporal');
     return response.json();
   },
 
@@ -208,10 +238,11 @@ export const apiService = {
     URL.revokeObjectURL(url);
   },
 
-  async deleteMyAccount(): Promise<{ status: string; message: string }> {
+  async deleteMyAccount(password: string): Promise<{ status: string; message: string }> {
     const response = await fetch(`${API_BASE_URL}/auth/me`, {
       method: 'DELETE',
-      headers: buildHeaders(),
+      headers: buildHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ password }),
     });
     if (!response.ok) throw await parseError(response, 'Error al eliminar la cuenta');
     const data = await response.json();
@@ -234,11 +265,16 @@ export const apiService = {
     return response.json();
   },
 
-  async streamChat(request: ChatQueryRequest, callbacks: StreamChatCallbacks): Promise<void> {
+  async streamChat(
+    request: ChatQueryRequest,
+    callbacks: StreamChatCallbacks,
+    signal?: AbortSignal
+  ): Promise<void> {
     const response = await fetch(`${API_BASE_URL}/chat/stream`, {
       method: 'POST',
       headers: buildHeaders({ 'Content-Type': 'application/json', Accept: 'text/event-stream' }),
       body: JSON.stringify(request),
+      signal,
     });
     if (!response.ok || !response.body) {
       throw await parseError(response, 'Error al conectar la respuesta en tiempo real');
@@ -247,6 +283,17 @@ export const apiService = {
     const reader = response.body.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
+
+    const onAbort = () => {
+      reader.cancel().catch(() => {});
+    };
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
 
     const processEventBlock = (block: string) => {
       const lines = block.split('\n');
@@ -273,17 +320,21 @@ export const apiService = {
       }
     };
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split('\n\n');
-      buffer = parts.pop() || '';
-      for (const part of parts) {
-        if (part.trim()) processEventBlock(part);
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+        for (const part of parts) {
+          if (part.trim()) processEventBlock(part);
+        }
       }
+      if (buffer.trim()) processEventBlock(buffer);
+    } finally {
+      if (signal) signal.removeEventListener('abort', onAbort);
     }
-    if (buffer.trim()) processEventBlock(buffer);
   },
 
   // --- CONVERSACIONES CRUD ---

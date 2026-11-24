@@ -25,8 +25,8 @@ import {
   DocumentSummary,
   DocumentUploadResponse,
 } from './types';
-import { apiService, getStoredToken } from './services/api';
-import { X, Layers } from 'lucide-react';
+import { apiService, getStoredToken, setOnUnauthorized } from './services/api';
+import { AlertCircle, X, Layers } from 'lucide-react';
 
 export const App: React.FC = () => {
   const { route, navigate } = useAppRoute();
@@ -60,6 +60,7 @@ export const App: React.FC = () => {
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
   const [isCheckingConversation, setIsCheckingConversation] = useState(false);
+  const [appBanner, setAppBanner] = useState<{ type: 'error' | 'info'; text: string } | null>(null);
   const [aiProvider, setAiProvider] = useState<AIProvider>(() => {
     const saved = typeof window !== 'undefined' ? localStorage.getItem('legalprop_ai_provider') : null;
     return saved === 'gemini' || saved === 'grok' || saved === 'auto' ? saved : 'auto';
@@ -75,7 +76,15 @@ export const App: React.FC = () => {
   // Evita recargar la conversación que acabamos de crear por streaming
   const skipNextRouteLoadRef = useRef<string | null>(null);
   const consumedQueryRef = useRef<string | null>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
   const sendMessageRef = useRef<(query: string, useWebFallback: boolean) => void>(() => {});
+
+  const abortActiveStream = useCallback(() => {
+    if (streamAbortRef.current) {
+      streamAbortRef.current.abort();
+      streamAbortRef.current = null;
+    }
+  }, []);
 
   const fetchHealth = useCallback(async () => {
     try {
@@ -89,16 +98,22 @@ export const App: React.FC = () => {
     try {
       const data = await apiService.listDocuments();
       setDocuments(data.documents || []);
-    } catch {
-      /* silencioso */
+    } catch (err: any) {
+      setAppBanner({
+        type: 'error',
+        text: err?.message || 'No se pudo cargar la lista de documentos.',
+      });
     }
   }, []);
 
   const fetchConversations = useCallback(async () => {
     try {
       setConversations((await apiService.listConversations()) || []);
-    } catch {
-      /* silencioso */
+    } catch (err: any) {
+      setAppBanner({
+        type: 'error',
+        text: err?.message || 'No se pudo cargar tu historial de conversaciones.',
+      });
     }
   }, []);
 
@@ -117,6 +132,22 @@ export const App: React.FC = () => {
       setAuthReady(true);
     }
   }, []);
+
+  useEffect(() => {
+    setOnUnauthorized(() => {
+      abortActiveStream();
+      setUser(null);
+      setAppBanner({
+        type: 'info',
+        text: 'Tu sesión expiró o fue cerrada por seguridad. Inicia sesión nuevamente si deseas acceder a tus archivos privados.',
+      });
+    });
+    return () => setOnUnauthorized(null);
+  }, [abortActiveStream]);
+
+  useEffect(() => {
+    return () => abortActiveStream();
+  }, [abortActiveStream]);
 
   useEffect(() => {
     fetchHealth();
@@ -234,29 +265,47 @@ export const App: React.FC = () => {
     }
   }, [authReady, route, conversationId, loadConversationById]);
 
-  const handleAuthSuccess = (loggedUser: UserProfile) => {
+  const handleAuthSuccess = async (loggedUser: UserProfile) => {
+    abortActiveStream();
     setUser(loggedUser);
+    setAppBanner(null);
+    try {
+      const mig = await apiService.migrateGuestSession();
+      if ((mig.migrated_conversations || 0) > 0 || (mig.migrated_documents || 0) > 0) {
+        setAppBanner({
+          type: 'info',
+          text: `Se conservaron en tu cuenta ${mig.migrated_conversations} chat(s) y ${mig.migrated_documents} documento(s) de tu sesión temporal.`,
+        });
+      }
+    } catch {
+      /* si no había datos temporales de invitado */
+    }
     setMessages([]);
     setConversationId(undefined);
     setConversationTitle(undefined);
     setSelectedDocIds([]);
     fetchDocuments();
     fetchConversations();
+    refreshProfile();
   };
 
   const handleLogout = () => {
+    abortActiveStream();
     apiService.logout();
     setUser(null);
     setMessages([]);
     setConversationId(undefined);
     setConversationTitle(undefined);
     setSelectedDocIds([]);
+    setAppBanner(null);
     fetchDocuments();
     fetchConversations();
     navigate('/chat/new', { replace: true });
   };
 
   const handleNewConversation = () => {
+    abortActiveStream();
+    setIsLoading(false);
     setMessages([]);
     setConversationId(undefined);
     setConversationTitle(undefined);
@@ -264,6 +313,10 @@ export const App: React.FC = () => {
   };
 
   const handleSelectConversation = (id: string) => {
+    if (id !== conversationId) {
+      abortActiveStream();
+      setIsLoading(false);
+    }
     navigate(`/chat/${encodeURIComponent(id)}`);
   };
 
@@ -341,6 +394,10 @@ export const App: React.FC = () => {
   };
 
   const handleSendMessage = async (query: string, useWebFallback: boolean) => {
+    abortActiveStream();
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+
     const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const userMsg: ChatMessage = {
       id: `u_${Date.now()}`,
@@ -361,6 +418,7 @@ export const App: React.FC = () => {
 
     setMessages((prev) => [...prev, userMsg, placeholderAssistant]);
     setIsLoading(true);
+    setAppBanner(null);
 
     const syncConversationUrl = (newId?: string) => {
       if (!newId) return;
@@ -383,6 +441,7 @@ export const App: React.FC = () => {
         },
         {
           onMetadata: (meta) => {
+            if (controller.signal.aborted) return;
             syncConversationUrl(meta.conversation_id);
             if (meta.conversation_title) setConversationTitle(meta.conversation_title);
             setMessages((prev) =>
@@ -404,6 +463,7 @@ export const App: React.FC = () => {
             );
           },
           onProvider: (prov) => {
+            if (controller.signal.aborted) return;
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantTempId
@@ -421,6 +481,7 @@ export const App: React.FC = () => {
             );
           },
           onToken: (text) => {
+            if (controller.signal.aborted) return;
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantTempId ? { ...m, content: m.content + text } : m
@@ -428,6 +489,7 @@ export const App: React.FC = () => {
             );
           },
           onWebSources: (updatedCitations) => {
+            if (controller.signal.aborted) return;
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantTempId
@@ -441,6 +503,7 @@ export const App: React.FC = () => {
             );
           },
           onDone: (info) => {
+            if (controller.signal.aborted) return;
             syncConversationUrl(info.conversation_id);
             if (info.conversation_title) setConversationTitle(info.conversation_title);
             setMessages((prev) =>
@@ -464,6 +527,7 @@ export const App: React.FC = () => {
             );
           },
           onError: (detail) => {
+            if (controller.signal.aborted) return;
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantTempId
@@ -476,24 +540,47 @@ export const App: React.FC = () => {
               )
             );
           },
-        }
+        },
+        controller.signal
       );
-      fetchConversations();
-      refreshProfile();
+      if (!controller.signal.aborted) {
+        fetchConversations();
+        refreshProfile();
+      }
     } catch (err: any) {
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantTempId
-            ? {
-                ...m,
-                content: `No se pudo conectar con el servicio: ${err.message || 'verifica el servidor'}`,
-                isStreaming: false,
-              }
-            : m
-        )
-      );
+      const isAbort = controller.signal.aborted || err?.name === 'AbortError';
+      if (isAbort) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantTempId
+              ? {
+                  ...m,
+                  content: m.content
+                    ? `${m.content}\n\n*(Respuesta detenida por el usuario)*`
+                    : '*(Respuesta detenida por el usuario)*',
+                  isStreaming: false,
+                }
+              : m
+          )
+        );
+      } else {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantTempId
+              ? {
+                  ...m,
+                  content: `No se pudo conectar con el servicio: ${err.message || 'verifica el servidor'}`,
+                  isStreaming: false,
+                }
+              : m
+          )
+        );
+      }
     } finally {
-      setIsLoading(false);
+      if (streamAbortRef.current === controller) {
+        streamAbortRef.current = null;
+        setIsLoading(false);
+      }
     }
   };
 
@@ -596,6 +683,30 @@ export const App: React.FC = () => {
         />
 
         <main id="main-chat" className="flex-1 flex flex-col min-w-0 bg-cream-100 relative">
+          {appBanner && (
+            <div
+              role="status"
+              className={`mx-4 sm:mx-6 mt-2 px-3.5 py-2 rounded-xl border text-xs flex items-center justify-between gap-2 ${
+                appBanner.type === 'error'
+                  ? 'bg-rose-50 border-rose-200 text-rose-900'
+                  : 'bg-teal-50 border-teal-200 text-teal-950'
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>{appBanner.text}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setAppBanner(null)}
+                aria-label="Cerrar aviso"
+                className="p-0.5 rounded hover:bg-black/5 shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           <ChatContainer
             messages={messages}
             userName={user?.full_name}
@@ -606,6 +717,7 @@ export const App: React.FC = () => {
 
           <ChatInput
             onSendMessage={handleSendMessage}
+            onStopStreaming={abortActiveStream}
             isLoading={isLoading}
             onOpenUpload={() => {
               setDocModalDefaultPublic(false);

@@ -6,9 +6,10 @@ import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from app.core.rate_limiter import get_trusted_client_ip, rate_limiter
 from app.core.security import (
     get_guest_session_id,
     get_optional_user,
@@ -84,8 +85,33 @@ def _evaluate_disambiguation(
     if has_user_docs:
         return None
 
-    mentions_lease = any(k in ql for k in ["arriendo", "canon", "sacar", "desalojo", "subir", "terminar"])
-    specifies_lease_type = any(k in ql for k in ["vivienda", "apartamento", "casa", "local", "comercial", "bodega", "oficina", "ley 820"])
+    mentions_lease = any(
+        k in ql
+        for k in [
+            "arriendo",
+            "arrendamiento",
+            "canon",
+            "desalojo",
+            "inquilino",
+            "arrendatario",
+            "arrendador",
+            "subir el arriendo",
+        ]
+    )
+    specifies_lease_type = any(
+        k in ql
+        for k in [
+            "vivienda",
+            "apartamento",
+            "casa",
+            "local",
+            "comercial",
+            "bodega",
+            "oficina",
+            "ley 820",
+            "habitacional",
+        ]
+    )
     if mentions_lease and not specifies_lease_type and len(words) < 16:
         return DisambiguationInfo(
             needed=True,
@@ -105,8 +131,22 @@ def _evaluate_disambiguation(
             ],
         )
 
-    mentions_convivencia = any(k in ql for k in ["vecino", "ruido", "mascota", "perro", "multa", "parqueadero", "basura", "fiesta"])
-    specifies_ph = any(k in ql for k in ["conjunto", "edificio", "propiedad horizontal", "copropiedad", "administracion", "administración", "ley 675", "casa independiente"])
+    mentions_convivencia = any(
+        k in ql for k in ["vecino", "ruido", "mascota", "perro", "multa", "parqueadero", "basura", "fiesta"]
+    )
+    specifies_ph = any(
+        k in ql
+        for k in [
+            "conjunto",
+            "edificio",
+            "propiedad horizontal",
+            "copropiedad",
+            "administracion",
+            "administración",
+            "ley 675",
+            "casa independiente",
+        ]
+    )
     if mentions_convivencia and not specifies_ph and explicit_category != "propiedad_horizontal" and len(words) < 16:
         return DisambiguationInfo(
             needed=True,
@@ -164,16 +204,23 @@ def _get_or_create_conversation(
     if conversation_id:
         conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
         if conv:
-            if current_user and conv.user_id != current_user.id:
-                conv = None
-            elif not current_user and conv.user_id is not None:
-                conv = None
+            if current_user:
+                if conv.user_id != current_user.id:
+                    conv = None
+            else:
+                if (
+                    conv.user_id is not None
+                    or not guest_session_id
+                    or conv.guest_session_id != guest_session_id
+                ):
+                    conv = None
 
     if conv is None:
+        safe_guest_id = None if current_user else (guest_session_id or f"ephemeral_{uuid.uuid4().hex[:16]}")
         conv = Conversation(
             id=str(uuid.uuid4()),
             user_id=current_user.id if current_user else None,
-            guest_session_id=None if current_user else (guest_session_id or "anonymous"),
+            guest_session_id=safe_guest_id,
             title=_auto_title_from_query(query),
             category=category,
         )
@@ -227,10 +274,11 @@ async def _prepare_chat_context(
     db.add(user_msg)
     db.commit()
 
-    # Decidir antes si corremos búsqueda web en paralelo con RAG para no duplicar latencia (RNF02 < 2s)
+    # Solo activar búsqueda web si el usuario la solicitó o si la pregunta pide explícitamente datos en vivo (IPC/DANE/sentencias) sin archivos adjuntos.
+    # Nunca enviar consultas privadas a buscadores externos en silencio solo por baja similitud (Ley 1581).
     has_attached_ids = bool(request.document_ids)
     keyword_web = should_trigger_web_search(request.query)
-    eager_web = bool(request.use_web_fallback or (keyword_web and not has_attached_ids))
+    web_enabled = bool(request.use_web_fallback or (keyword_web and not has_attached_ids))
 
     rag_task = asyncio.to_thread(
         rag_engine.retrieve_context,
@@ -242,7 +290,7 @@ async def _prepare_chat_context(
     )
 
     web_results: List[Dict[str, Any]] = []
-    if eager_web:
+    if web_enabled:
         retrieved_chunks, web_results = await asyncio.gather(
             rag_task,
             web_search_service.search_legal_web(request.query, num_results=4, max_wait_seconds=1.1),
@@ -251,15 +299,6 @@ async def _prepare_chat_context(
         retrieved_chunks = await rag_task
 
     has_user_docs = any(not c.get("is_public", True) for c in retrieved_chunks) or has_attached_ids
-    top_local_score = retrieved_chunks[0].get("similarity_score", 0.0) if retrieved_chunks else 0.0
-
-    # Solo hacer fallback web adicional si NO hay documentos adjuntos y la cobertura local es muy baja
-    web_enabled = eager_web
-    if not eager_web and not has_user_docs and top_local_score < 0.34:
-        web_enabled = True
-        web_results = await web_search_service.search_legal_web(
-            request.query, num_results=3, max_wait_seconds=1.0
-        )
 
     web_context_parts: List[str] = []
     if web_results:
@@ -383,10 +422,18 @@ def _merge_google_grounding_citations(
 )
 async def query_chat(
     request: ChatQueryRequest,
+    http_request: Request,
     current_user: Optional[User] = Depends(get_optional_user),
     guest_session_id: Optional[str] = Depends(get_guest_session_id),
     db: Session = Depends(get_db),
 ):
+    client_key = f"u:{current_user.id}" if current_user else f"ip:{get_trusted_client_ip(http_request)}"
+    rate_limiter.check(
+        f"chat:query:{client_key}",
+        limit=30 if current_user else 15,
+        window_seconds=60,
+    )
+
     if not request.query.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -423,8 +470,8 @@ async def query_chat(
             )
         else:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Error en el motor generativo: {str(e)}",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="El servicio de inteligencia artificial presentó una intermitencia temporal. Intenta nuevamente en unos segundos.",
             )
 
     all_citations = _merge_google_grounding_citations(citations, google_sources)
@@ -451,7 +498,13 @@ async def query_chat(
     db.add(assistant_msg)
     conv.updated_at = datetime.utcnow()
     if current_user:
-        db.add(AuditLog(user_id=current_user.id, action="CHAT_QUERY", details=f"Conv {conv.id[:8]} | {provider_meta.get('provider_used')} | {elapsed_ms}ms"))
+        db.add(
+            AuditLog(
+                user_id=current_user.id,
+                action="CHAT_QUERY",
+                details=f"Conv {conv.id[:8]} | {provider_meta.get('provider_used')} | {elapsed_ms}ms",
+            )
+        )
     db.commit()
     db.refresh(assistant_msg)
 
@@ -474,9 +527,17 @@ async def query_chat(
 )
 async def stream_chat(
     request: ChatQueryRequest,
+    http_request: Request,
     user_info: Optional[Dict[str, str]] = Depends(resolve_optional_user_detached),
     guest_session_id: Optional[str] = Depends(get_guest_session_id),
 ):
+    client_key = f"u:{user_info['id']}" if user_info else f"ip:{get_trusted_client_ip(http_request)}"
+    rate_limiter.check(
+        f"chat:stream:{client_key}",
+        limit=30 if user_info else 15,
+        window_seconds=60,
+    )
+
     if not request.query.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -533,6 +594,7 @@ async def stream_chat(
             "fallback_used": False,
         }
         ttft_ms: Optional[int] = None
+        client_disconnected = False
 
         try:
             async for item in ai_orchestrator.astream_response(
@@ -545,6 +607,11 @@ async def stream_chat(
                 has_user_docs=prep["has_user_docs"],
                 ai_provider=request.ai_provider,
             ):
+                if await http_request.is_disconnected():
+                    client_disconnected = True
+                    logger.info(f"Cliente desconectado durante stream SSE (conv {conv_id[:8]}); deteniendo generación.")
+                    break
+
                 evt_type = item.get("type")
 
                 if evt_type == "provider_info":
@@ -570,9 +637,11 @@ async def stream_chat(
                     updated = _merge_google_grounding_citations(citations, google_sources)
                     yield _sse("web_sources", {"citations": [c.model_dump() for c in updated]})
 
+        except asyncio.CancelledError:
+            client_disconnected = True
+            logger.info(f"Stream SSE cancelado (conv {conv_id[:8]}).")
         except Exception as exc:
-            err_msg = str(exc)
-            logger.error(f"Error en stream SSE: {err_msg}")
+            logger.error(f"Error en stream SSE: {exc}", exc_info=True)
             if not accumulated_text_parts and retrieved_chunks:
                 if ttft_ms is None:
                     ttft_ms = int((time.perf_counter() - t0) * 1000)
@@ -585,7 +654,10 @@ async def stream_chat(
                 accumulated_text_parts.append(fallback_txt)
                 yield _sse("token", {"text": fallback_txt})
             elif not accumulated_text_parts:
-                yield _sse("error", {"detail": err_msg})
+                yield _sse(
+                    "error",
+                    {"detail": "El servicio de IA presentó una intermitencia temporal. Intenta nuevamente en unos segundos."},
+                )
 
         final_answer = "".join(accumulated_text_parts).strip()
         all_citations = _merge_google_grounding_citations(citations, google_sources)
@@ -593,6 +665,9 @@ async def stream_chat(
 
         msg_id = str(uuid.uuid4())
         if final_answer:
+            if client_disconnected:
+                final_answer += "\n\n*(Respuesta detenida antes de finalizar)*"
+
             def _persist_message() -> None:
                 save_db = SessionLocal()
                 try:
@@ -604,6 +679,7 @@ async def stream_chat(
                         "ttft_ms": ttft_ms,
                         "total_ms": total_ms,
                         "is_draft_document": prep["is_draft_document"],
+                        "stopped_early": client_disconnected,
                         "disambiguation": prep["disambiguation"].model_dump() if prep["disambiguation"] else None,
                         **provider_info,
                     }
@@ -633,17 +709,18 @@ async def stream_chat(
 
             await asyncio.to_thread(_persist_message)
 
-        yield _sse(
-            "done",
-            {
-                "message_id": msg_id,
-                "conversation_id": conv_id,
-                "conversation_title": conv_title,
-                "ttft_ms": ttft_ms,
-                "total_ms": total_ms,
-                **provider_info,
-            },
-        )
+        if not client_disconnected:
+            yield _sse(
+                "done",
+                {
+                    "message_id": msg_id,
+                    "conversation_id": conv_id,
+                    "conversation_title": conv_title,
+                    "ttft_ms": ttft_ms,
+                    "total_ms": total_ms,
+                    **provider_info,
+                },
+            )
 
     return StreamingResponse(
         event_generator(),

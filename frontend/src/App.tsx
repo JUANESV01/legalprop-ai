@@ -327,6 +327,19 @@ export const App: React.FC = () => {
     });
   };
 
+  const handleExportDraft = async (
+    title: string,
+    content: string,
+    format: 'docx' | 'pdf' | 'txt'
+  ) => {
+    await apiService.downloadDraftDocument({
+      title,
+      content,
+      format,
+      user_name: user?.full_name || null,
+    });
+  };
+
   const handleSendMessage = async (query: string, useWebFallback: boolean) => {
     const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const userMsg: ChatMessage = {
@@ -383,6 +396,7 @@ export const App: React.FC = () => {
                         ...(m.metadata || {}),
                         user_documents_used: meta.user_documents_used,
                         web_fallback_used: meta.web_fallback_used,
+                        is_draft_document: meta.is_draft_document,
                       },
                     }
                   : m
@@ -587,6 +601,7 @@ export const App: React.FC = () => {
             userName={user?.full_name}
             onSelectPrompt={(p) => handleSendMessage(p, false)}
             onExportPdf={handleExportMessagePdf}
+            onExportDraft={handleExportDraft}
           />
 
           <ChatInput

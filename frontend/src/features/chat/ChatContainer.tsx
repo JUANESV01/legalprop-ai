@@ -8,6 +8,7 @@ interface ChatContainerProps {
   userName?: string;
   onSelectPrompt: (prompt: string) => void;
   onExportPdf?: (question: string, message: MessageType) => Promise<void>;
+  onExportDraft?: (title: string, content: string, format: 'docx' | 'pdf' | 'txt') => Promise<void>;
 }
 
 export const ChatContainer: React.FC<ChatContainerProps> = ({
@@ -15,6 +16,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
   userName,
   onSelectPrompt,
   onExportPdf,
+  onExportDraft,
 }) => {
   const lastTurnRef = useRef<HTMLDivElement>(null);
   const prevCountRef = useRef(0);
@@ -77,6 +79,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                   previousQuestion={prevQuestion}
                   onSelectFollowup={onSelectPrompt}
                   onExportPdf={onExportPdf}
+                  onExportDraft={onExportDraft}
                 />
               </div>
             );

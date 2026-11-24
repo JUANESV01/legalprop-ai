@@ -2,7 +2,17 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Response
 from app.core.security import get_optional_user
 from app.models.db_models import User
-from app.models.schemas.tools import IPCCalcRequest, IPCCalcResponse, PDFReportRequest
+from app.models.schemas.tools import (
+    DraftExportRequest,
+    IPCCalcRequest,
+    IPCCalcResponse,
+    PDFReportRequest,
+)
+from app.services.draft_export_service import (
+    generate_draft_docx,
+    generate_draft_pdf,
+    generate_draft_txt,
+)
 from app.services.ipc_service import ipc_service
 from app.services.pdf_service import generate_consultation_pdf
 
@@ -59,4 +69,31 @@ def create_pdf_report(
         headers={
             "Content-Disposition": 'attachment; filename="constancia_legalprop_ai.pdf"'
         },
+    )
+
+
+@router.post(
+    "/drafts/export",
+    summary="Descargar borrador legal redactado en Word (.docx), PDF (.pdf) o texto plano (.txt)",
+)
+def export_legal_draft(
+    payload: DraftExportRequest,
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    effective_user = payload.user_name or (current_user.full_name if current_user else None)
+
+    if payload.format == "docx":
+        raw_bytes, filename = generate_draft_docx(payload.title, payload.content, effective_user)
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    elif payload.format == "txt":
+        raw_bytes, filename = generate_draft_txt(payload.title, payload.content)
+        media_type = "text/plain; charset=utf-8"
+    else:
+        raw_bytes, filename = generate_draft_pdf(payload.title, payload.content, effective_user)
+        media_type = "application/pdf"
+
+    return Response(
+        content=raw_bytes,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

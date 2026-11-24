@@ -25,6 +25,7 @@ from app.models.schemas.chat import (
     DisambiguationOption,
 )
 from app.services.ai_orchestrator import ai_orchestrator
+from app.services.draft_export_service import is_document_draft_request
 from app.services.ipc_service import ipc_service
 from app.services.rag_engine import rag_engine
 from app.services.web_search import should_trigger_web_search, web_search_service
@@ -347,6 +348,7 @@ async def _prepare_chat_context(
         "full_context": full_context,
         "detected_category": detected_category,
         "disambiguation": disambiguation,
+        "is_draft_document": is_document_draft_request(request.query),
     }
 
 
@@ -434,6 +436,7 @@ async def query_chat(
         "web_fallback_used": bool(prep["web_enabled"] or google_sources),
         "google_grounding_count": len(google_sources),
         "elapsed_ms": elapsed_ms,
+        "is_draft_document": prep["is_draft_document"],
         "disambiguation": prep["disambiguation"].model_dump() if prep["disambiguation"] else None,
         **provider_meta,
     }
@@ -516,6 +519,7 @@ async def stream_chat(
                 "user_documents_used": prep["has_user_docs"],
                 "web_fallback_used": prep["web_enabled"],
                 "ai_provider_requested": request.ai_provider,
+                "is_draft_document": prep["is_draft_document"],
                 "disambiguation": prep["disambiguation"].model_dump() if prep["disambiguation"] else None,
             },
         )
@@ -599,6 +603,7 @@ async def stream_chat(
                         "google_grounding_count": len(google_sources),
                         "ttft_ms": ttft_ms,
                         "total_ms": total_ms,
+                        "is_draft_document": prep["is_draft_document"],
                         "disambiguation": prep["disambiguation"].model_dump() if prep["disambiguation"] else None,
                         **provider_info,
                     }

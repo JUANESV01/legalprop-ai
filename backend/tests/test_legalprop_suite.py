@@ -396,5 +396,34 @@ class LegalPropRequirementsTestSuite(unittest.IsolatedAsyncioTestCase):
         self.assertLess(elapsed_s, 15.0)
 
 
+    async def test_09_draft_export_docx_pdf_txt_and_detection(self):
+        from app.services.draft_export_service import is_document_draft_request
+
+        # Solo se activa si piden crear/diseñar/redactar un documento, NO en preguntas normales
+        self.assertTrue(is_document_draft_request("Diseña un contrato de prestación de servicios en Colombia"))
+        self.assertTrue(is_document_draft_request("Redáctame una carta de preaviso de arrendamiento"))
+        self.assertFalse(is_document_draft_request("¿Cuánto pueden subir el arriendo este año?"))
+        self.assertFalse(is_document_draft_request("¿Qué ves sobre este contrato, es válido?"))
+
+        transport = httpx.ASGITransport(app=app)
+        sample_draft = (
+            "## CONTRATO DE PRESTACIÓN DE SERVICIOS\n\n"
+            "**CLÁUSULA PRIMERA (Objeto):** El contratista prestará servicios profesionales con autonomía.\n"
+            "- Honorarios: [COMPLETAR] COP mensuales.\n"
+            "- Plazo: [COMPLETAR] meses."
+        )
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            for fmt, magic in [("docx", b"PK"), ("pdf", b"%PDF-1.4"), ("txt", b"CONTRATO")]:
+                resp = await client.post(
+                    "/api/v1/tools/drafts/export",
+                    json={"title": "Contrato de Prestacion de Servicios", "content": sample_draft, "format": fmt},
+                )
+                self.assertEqual(resp.status_code, 200, f"Fallo exportando .{fmt}: {resp.text}")
+                self.assertTrue(
+                    resp.content.startswith(magic) or (fmt == "txt" and b"CONTRATO" in resp.content),
+                    f"Contenido inesperado para .{fmt}",
+                )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

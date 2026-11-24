@@ -17,6 +17,7 @@ interface ChatMessageProps {
   previousQuestion?: string;
   onSelectFollowup?: (query: string) => void;
   onExportPdf?: (question: string, message: MessageType) => Promise<void>;
+  onExportDraft?: (title: string, content: string, format: 'docx' | 'pdf' | 'txt') => Promise<void>;
 }
 
 function renderInline(text: string): React.ReactNode[] {
@@ -125,10 +126,36 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   previousQuestion,
   onSelectFollowup,
   onExportPdf,
+  onExportDraft,
 }) => {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
+  const [exportingDraftFmt, setExportingDraftFmt] = useState<'docx' | 'pdf' | 'txt' | null>(null);
+
+  const isDraftDocument = Boolean(
+    message.metadata?.is_draft_document ||
+      (previousQuestion &&
+        /\b(crea|crear|creame|créame|dise[ñn]a|dise[ñn]ar|dise[ñn]ame|redacta|redactar|red[aá]ctame|elabora|elaborar|genera|generar|haz|hazme|prepara|preparar|estructura|escribe)\b/i.test(
+          previousQuestion
+        ) &&
+        /\b(contrato|minuta|carta|derecho\s+de\s+petici[oó]n|petici[oó]n|acuerdo|promesa|pagar[eé]|acta|reglamento|comunicado|notificaci[oó]n|preaviso|poder|documento|formato|modelo|plantilla|borrador|otros[ií]|tutela)\b/i.test(
+          previousQuestion
+        ))
+  );
+
+  const handleDownloadDraft = async (format: 'docx' | 'pdf' | 'txt') => {
+    if (!onExportDraft) return;
+    setExportingDraftFmt(format);
+    try {
+      const cleanTitle = (previousQuestion || 'Borrador LegalProp')
+        .replace(/^[¿¡\s]+|[?!.\s]+$/g, '')
+        .slice(0, 80);
+      await onExportDraft(cleanTitle || 'Borrador LegalProp', message.content, format);
+    } finally {
+      setExportingDraftFmt(null);
+    }
+  };
   // Fuentes ocultas por defecto para no empujar ni ensuciar la respuesta;
   // se abren solo si el usuario hace clic o pidió explícitamente ver fuentes/citas.
   const askedForSources = Boolean(
@@ -207,6 +234,31 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
               ))}
             </div>
           )}
+
+        {/* Descarga directa de borrador SOLO cuando el usuario pidió crear/diseñar un contrato o documento */}
+        {!message.isStreaming && message.content && isDraftDocument && onExportDraft && (
+          <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-xl bg-teal-50/80 border border-teal-200/90 text-xs">
+            <span className="font-semibold text-teal-900 mr-1">
+              Descargar borrador:
+            </span>
+            {(['docx', 'pdf', 'txt'] as const).map((fmt) => {
+              const label = fmt === 'docx' ? 'Word (.docx)' : fmt === 'pdf' ? 'PDF (.pdf)' : 'TXT (.txt)';
+              const busy = exportingDraftFmt === fmt;
+              return (
+                <button
+                  key={fmt}
+                  type="button"
+                  onClick={() => handleDownloadDraft(fmt)}
+                  disabled={exportingDraftFmt !== null}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white hover:bg-teal-700 hover:text-white border border-teal-300 text-teal-900 text-[11px] font-semibold transition-colors disabled:opacity-50"
+                >
+                  {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <FileDown className="w-3 h-3" />}
+                  <span>{label}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Barra discreta de acciones y botón desplegable de fuentes */}
         {!message.isStreaming && message.content && (

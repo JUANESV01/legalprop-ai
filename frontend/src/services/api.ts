@@ -70,6 +70,7 @@ export interface StreamChatCallbacks {
     citations: Citation[];
     user_documents_used?: boolean;
     web_fallback_used?: boolean;
+    is_draft_document?: boolean;
     disambiguation?: DisambiguationInfo | null;
   }) => void;
   onToken?: (text: string) => void;
@@ -449,6 +450,30 @@ export const apiService = {
     const a = document.createElement('a');
     a.href = url;
     a.download = `constancia_legalprop_${new Date().toISOString().slice(0, 10)}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
+
+  async downloadDraftDocument(payload: {
+    title: string;
+    content: string;
+    format: 'docx' | 'pdf' | 'txt';
+    user_name?: string | null;
+  }): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/tools/drafts/export`, {
+      method: 'POST',
+      headers: buildHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw await parseError(response, `No se pudo generar el archivo .${payload.format}`);
+    const blob = await response.blob();
+    const disp = response.headers.get('content-disposition') || '';
+    const match = disp.match(/filename="?([^"]+)"?/i);
+    const filename = match?.[1] || `borrador_legalprop.${payload.format}`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
   },

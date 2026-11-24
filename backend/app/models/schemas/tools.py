@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 from app.models.schemas.chat import CitationSchema
 
@@ -43,3 +43,10 @@ class PDFReportRequest(BaseModel):
     category: Optional[str] = None
     user_name: Optional[str] = None
     conversation_title: Optional[str] = None
+
+
+class DraftExportRequest(BaseModel):
+    title: str = Field("Borrador Legal", min_length=1, max_length=160, description="Título del contrato o documento")
+    content: str = Field(..., min_length=1, description="Texto del borrador redactado por LegalProp AI")
+    format: Literal["docx", "pdf", "txt"] = Field("docx", description="Formato de descarga: docx, pdf o txt")
+    user_name: Optional[str] = None

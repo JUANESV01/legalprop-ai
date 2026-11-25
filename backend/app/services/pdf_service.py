@@ -228,6 +228,7 @@ def generate_consultation_pdf(
     category: Optional[str] = None,
     user_name: Optional[str] = None,
     conversation_title: Optional[str] = None,
+    verification_note: Optional[str] = None,
 ) -> bytes:
     """Genera el binario PDF estructurado de una consulta jurídica (HU06 / RF06)."""
     pdf = SimplePDFBuilder()
@@ -242,6 +243,8 @@ def generate_consultation_pdf(
         meta_lines.append(f"Solicitante: {user_name}")
     if conversation_title:
         meta_lines.append(f"Tema de sesion: {conversation_title}")
+    if verification_note:
+        meta_lines.append(verification_note)
 
     pdf.add_paragraph("\n".join(meta_lines), font="F1", size=9.2, color_rgb="0.32 0.36 0.42", line_height=13.0)
     pdf.add_divider()

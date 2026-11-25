@@ -329,6 +329,7 @@ class LegalPropRequirementsTestSuite(unittest.IsolatedAsyncioTestCase):
 
         with patch("app.services.ai_orchestrator.settings.GEMINI_API_KEY", "AIzaFakeTestKey123456"), \
              patch("app.services.ai_orchestrator.settings.XAI_API_KEY", "xai-FakeTestKey123456"), \
+             patch("app.services.ai_orchestrator.settings.XAI_MODEL", "grok-test-model"), \
              patch("app.services.grok_service.grok_service.astream_response", side_effect=_mock_grok_fail), \
              patch("app.services.gemini_service.gemini_service.astream_response", side_effect=_mock_gemini_ok):
             events = []
@@ -539,7 +540,7 @@ class LegalPropRequirementsTestSuite(unittest.IsolatedAsyncioTestCase):
                 "/api/v1/documents/upload",
                 files={"file": ("tabla.xls", b"dummy", "application/vnd.ms-excel")},
                 data={"category": "contrato"},
-                headers={"X-Guest-Session": "guest_iso_alpha_123456"},
+                headers={"X-Guest-Session": "guest_iso_alpha_123456", "X-Privacy-Consent": "v1.1-2026"},
             )
             self.assertEqual(r_xls.status_code, 422)
             self.assertIn(".xlsx", r_xls.json()["detail"])
@@ -557,7 +558,7 @@ class LegalPropRequirementsTestSuite(unittest.IsolatedAsyncioTestCase):
                     )
                 },
                 data={"category": "contrato"},
-                headers={"X-Guest-Session": "guest_iso_alpha_123456"},
+                headers={"X-Guest-Session": "guest_iso_alpha_123456", "X-Privacy-Consent": "v1.1-2026"},
             )
             self.assertEqual(r_bomb.status_code, 422)
 

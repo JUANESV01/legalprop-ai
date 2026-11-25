@@ -206,14 +206,12 @@ export interface BackendHealthResponse {
   timestamp: string;
   service: string;
   version: string;
-  environment: string;
-  database_engine?: string;
+  corpus_ready?: boolean;
   gemini_api_configured: boolean;
-  gemini_model: string;
   xai_api_configured?: boolean;
-  xai_model?: string;
+  ai_providers?: Record<string, { enabled: boolean; label?: string }>;
   vector_store: {
-    collection_name: string;
+    collection_name?: string;
     total_chunks: number;
     embedding_model?: string;
     embedding_dimensions?: number;

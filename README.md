@@ -253,19 +253,34 @@ Abre `http://localhost:5173` (o compila con `npm run build` para servir todo des
 
 1. **GitHub Desktop:** abre la carpeta del proyecto, haz commit de los cambios y pulsa **Push origin** (`.gitignore` protege `backend/.env`, bases locales y backups).
 2. **Render:** ingresa a `dashboard.render.com` → **New + → Blueprint**, selecciona tu repositorio de GitHub (detectará automáticamente `render.yaml`).
-3. Configura tu variable secreta **`GEMINI_API_KEY`** en el panel de Render (`JWT_SECRET_KEY` se genera automáticamente).
+3. Configura en el panel de Render las variables secretas:
+   - **`GEMINI_API_KEY`** (obligatoria). `JWT_SECRET_KEY` se genera automáticamente.
+   - **`DATABASE_URL`** de PostgreSQL (Neon, Supabase o Render Postgres). **Sin ella se usa SQLite en el disco efímero y se pierden todos los usuarios y chats en cada despliegue.**
+   - **`MASTER_ADMIN_EMAIL`** y **`MASTER_ADMIN_PASSWORD`** (opcional). La contraseña Master solo se cambia desde esta variable: la cuenta Master no tiene preguntas de seguridad.
+   - **`XAI_API_KEY`** y **`XAI_MODEL`** (opcional, para Grok). `XAI_MODEL` debe ser el nombre exacto de un modelo vigente en [console.x.ai](https://console.x.ai); Grok solo se activa si ambas están definidas. `XAI_FALLBACK_MODELS` admite respaldos separados por comas.
 4. Pulsa **Deploy**: Render ejecutará `render_build.sh` (compila el frontend e instala el backend) y servirá toda la aplicación en una sola URL HTTPS con un consumo inferior a 150 MB de RAM.
 
 ---
 
 ## 11. Verificación Automatizada y Benchmarks RF/RNF (QA)
 
-Ejecuta la auditoría integral de estructura + la suite automatizada de 8 pruebas y benchmarks medibles (`RNF01`, `RNF02 < 2s`, `RNF04`, `RNF07 50 streams SSE`, `RNF08 WCAG AA`, `RNF09 Ley 1581` y `RNF10 PDF 50 págs. < 15s`):
+Ejecuta la auditoría de estructura y las pruebas automatizadas en un entorno aislado (sin claves reales):
 
 ```bash
 .venv/bin/python verify_legalprop.py
-# O únicamente la suite de pruebas y benchmarks en entorno aislado:
-.venv/bin/python -m unittest backend/tests/test_legalprop_suite.py -v
+cd backend
+pip install -r requirements-dev.txt
+python -m pytest tests -q   # requisitos RF/RNF + regresiones de seguridad
+ruff check .                # linter
 ```
+
+- `tests/test_legalprop_suite.py`: requisitos funcionales y no funcionales (`RNF01`, `RNF02 < 2s`, `RNF04`, `RNF07 50 streams SSE`, `RNF08 WCAG AA`, `RNF09 Ley 1581`, `RNF10 PDF 50 págs. < 15s`).
+- `tests/test_security_regressions.py`: una prueba por cada falla de la auditoría de noviembre de 2026 (cuenta Master, enumeración de correos, consentimiento, concurrencia de ChromaDB y embeddings, failover de Gemini/Grok, etc.).
+- GitHub Actions (`.github/workflows/ci.yml`) ejecuta lint, pruebas y build del frontend en cada push.
+
+### Límites conocidos de la cuota gratuita de Gemini
+- Los embeddings se limitan a `GEMINI_EMBEDDING_ITEMS_PER_MINUTE` (84 por defecto); un documento grande puede tardar varios minutos en indexarse.
+- `MAX_CHUNKS_PER_DOCUMENT` (400 por defecto) rechaza documentos demasiado extensos con un mensaje claro. Con una clave de pago puedes subir ambos valores.
+- La tabla del IPC del DANE (`backend/app/services/ipc_service.py`) debe actualizarse cada enero con la cifra oficial del año anterior.
 
 > **Aviso de Responsabilidad Legal:** LegalProp AI es una herramienta de orientación normativa con fines académicos e informativos. No sustituye el concepto vinculante ni la representación legal de un abogado titulado.

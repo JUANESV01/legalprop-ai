@@ -371,6 +371,7 @@ export const App: React.FC = () => {
 
   const handleExportMessagePdf = async (question: string, message: ChatMessage) => {
     await apiService.downloadMessagePdf({
+      message_id: message.id,
       question,
       answer: message.content,
       citations: message.citations || [],

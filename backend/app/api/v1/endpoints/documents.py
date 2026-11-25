@@ -10,6 +10,7 @@ en la base común global para todos los usuarios.
 import asyncio
 import hashlib
 import io
+import json
 import logging
 import uuid
 import zipfile
@@ -55,6 +56,33 @@ IMAGE_MIME_MAP = {
     "jpeg": "image/jpeg",
     "webp": "image/webp",
 }
+
+
+def _require_guest_consent(request: Request, current_user: Optional[User]) -> None:
+    """
+    Ley 1581 de 2012: los invitados deben aceptar la Política de Tratamiento de Datos antes de
+    subir documentos (los usuarios registrados ya la aceptaron al crear su cuenta).
+    """
+    if current_user:
+        return
+    consent = (request.headers.get("x-privacy-consent") or "").strip()
+    if consent != settings.PRIVACY_POLICY_VERSION:
+        raise HTTPException(
+            status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+            detail="Para subir documentos como invitado debes aceptar la Política de Tratamiento de Datos (Ley 1581 de 2012).",
+        )
+
+
+def _enforce_chunk_limit(content: str, title: str) -> None:
+    total = rag_engine.count_chunks(content, title=title)
+    if total > settings.MAX_CHUNKS_PER_DOCUMENT:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"El documento es demasiado extenso para indexarlo ({total} fragmentos; máximo "
+                f"{settings.MAX_CHUNKS_PER_DOCUMENT}). Divídelo en partes o sube solo las secciones relevantes."
+            ),
+        )
 
 
 def _validate_category(category: str) -> str:
@@ -316,13 +344,15 @@ async def ingest_text_document(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Se requiere iniciar sesión o contar con una sesión temporal válida (X-Guest-Session) para subir documentos.",
         )
+    _require_guest_consent(request, current_user)
 
-    doc_id = str(uuid.uuid4())[:12]
+    doc_id = uuid.uuid4().hex
     owner_scope = "public" if publish_global else resolve_owner_scope(current_user, guest_session_id)
     content_clean = payload.content.strip()
+    await asyncio.to_thread(_enforce_chunk_limit, content_clean, payload.title)
 
-    chunks_count = await asyncio.to_thread(
-        rag_engine.ingest_document,
+    chunks_count, emb_json, emb_model = await asyncio.to_thread(
+        rag_engine.ingest_document_full,
         doc_id=doc_id,
         title=payload.title,
         category=payload.category,
@@ -333,7 +363,6 @@ async def ingest_text_document(
         filename=f"{payload.title}.txt",
     )
 
-    emb_json, emb_model = rag_engine.export_last_embeddings_json()
     doc_rec = DocumentRecord(
         id=doc_id,
         owner_id=current_user.id if current_user else None,
@@ -427,6 +456,7 @@ async def upload_document_file(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Se requiere iniciar sesión o contar con una sesión temporal válida (X-Guest-Session) para subir archivos.",
         )
+    _require_guest_consent(request, current_user)
 
     max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
     content_bytes = await _read_upload_bounded(file, max_bytes)
@@ -446,11 +476,13 @@ async def upload_document_file(
         or filename.rsplit(".", 1)[0].replace("_", " ").replace("-", " ").strip().title()[:220]
     )
 
-    doc_id = str(uuid.uuid4())[:12]
+    await asyncio.to_thread(_enforce_chunk_limit, content_str, doc_title)
+
+    doc_id = uuid.uuid4().hex
     owner_scope = "public" if publish_global else resolve_owner_scope(current_user, guest_session_id)
 
-    chunks_count = await asyncio.to_thread(
-        rag_engine.ingest_document,
+    chunks_count, emb_json, emb_model = await asyncio.to_thread(
+        rag_engine.ingest_document_full,
         doc_id=doc_id,
         title=doc_title,
         category=clean_category,
@@ -467,7 +499,6 @@ async def upload_document_file(
             detail="No se pudo indexar contenido útil del archivo.",
         )
 
-    emb_json, emb_model = rag_engine.export_last_embeddings_json()
     doc_rec = DocumentRecord(
         id=doc_id,
         owner_id=current_user.id if current_user else None,
@@ -597,6 +628,15 @@ async def update_document_master(
     if not doc_rec:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Documento no encontrado.")
 
+    # Privacidad (Ley 1581 / RNF04): el Master no puede publicar ni modificar documentos privados
+    # que pertenecen a otros usuarios o a invitados; solo gestiona la base común y sus propios archivos.
+    owned_by_master = doc_rec.owner_id == master_user.id
+    if not doc_rec.is_public and not owned_by_master:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No puedes modificar ni publicar documentos privados de otros usuarios.",
+        )
+
     changed_index = False
     if payload.title is not None:
         doc_rec.title = payload.title.strip()
@@ -605,13 +645,29 @@ async def update_document_master(
         doc_rec.category = _validate_category(payload.category)
         changed_index = True
     if payload.is_public is not None and payload.is_public != doc_rec.is_public:
+        if not payload.is_public and not doc_rec.owner_id and not doc_rec.guest_session_id:
+            # Un documento de la base común sin dueño no puede volverse privado (quedaría huérfano)
+            doc_rec.owner_id = master_user.id
         doc_rec.is_public = payload.is_public
         changed_index = True
 
     if changed_index and doc_rec.extracted_content:
-        new_scope = "public" if doc_rec.is_public else (f"user:{doc_rec.owner_id}" if doc_rec.owner_id else "public")
-        doc_rec.chunks_count = await asyncio.to_thread(
-            rag_engine.ingest_document,
+        if doc_rec.is_public:
+            new_scope = "public"
+        elif doc_rec.owner_id:
+            new_scope = f"user:{doc_rec.owner_id}"
+        elif doc_rec.guest_session_id:
+            new_scope = f"guest:{doc_rec.guest_session_id}"
+        else:
+            new_scope = f"user:{master_user.id}"
+        cached_vecs = None
+        if doc_rec.embeddings_json and doc_rec.embedding_model == settings.GEMINI_EMBEDDING_MODEL:
+            try:
+                cached_vecs = json.loads(doc_rec.embeddings_json)
+            except Exception:
+                cached_vecs = None
+        chunks_new, emb_json, emb_model = await asyncio.to_thread(
+            rag_engine.ingest_document_full,
             doc_id=doc_rec.id,
             title=doc_rec.title,
             category=doc_rec.category,
@@ -620,7 +676,12 @@ async def update_document_master(
             owner_scope=new_scope,
             is_public=doc_rec.is_public,
             filename=doc_rec.filename,
+            precomputed_embeddings=cached_vecs,
         )
+        doc_rec.chunks_count = chunks_new
+        if emb_json and emb_model:
+            doc_rec.embeddings_json = emb_json
+            doc_rec.embedding_model = emb_model
 
     db.add(
         AuditLog(

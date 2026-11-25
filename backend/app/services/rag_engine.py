@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 import unicodedata
 from collections import OrderedDict, deque
@@ -72,19 +73,31 @@ class GeminiHybridEmbeddingFunction:
 
     DIM = settings.EMBEDDING_DIM  # 768
 
+    LOCAL_MODE = "local_fallback"
+    QUERY_MAX_WAIT_SECONDS = 4.0
+
     def __init__(self) -> None:
         self._client: Optional[genai.Client] = None
+        self._client_lock = threading.Lock()
+        self._cache_lock = threading.Lock()
+        self._budget_lock = threading.Lock()
         self._query_cache: OrderedDict[str, List[float]] = OrderedDict()
         self._cache_max = 256
         self._minute_window: Deque[Tuple[float, int]] = deque()
-        self.last_mode: str = "gemini-embedding-001" if settings.is_gemini_configured else "local_fallback"
+        # Solo informativo (estadísticas). El modo real de cada lote se devuelve junto a sus vectores.
+        self.last_mode: str = settings.GEMINI_EMBEDDING_MODEL if settings.is_gemini_configured else self.LOCAL_MODE
 
-    def name(self) -> str:
-        return f"legalprop_gemini_emb_{self.DIM}_v3"
+    @staticmethod
+    def name() -> str:
+        return f"legalprop_gemini_emb_{settings.EMBEDDING_DIM}_v4"
 
     @staticmethod
     def is_legacy() -> bool:
         return False
+
+    @staticmethod
+    def build_from_config(config: Dict[str, Any]) -> "GeminiHybridEmbeddingFunction":
+        return GeminiHybridEmbeddingFunction()
 
     def get_config(self) -> Dict[str, Any]:
         return {"dim": self.DIM, "model": settings.GEMINI_EMBEDDING_MODEL}
@@ -98,14 +111,16 @@ class GeminiHybridEmbeddingFunction:
     @property
     def client(self) -> Optional[genai.Client]:
         if self._client is None and settings.is_gemini_configured:
-            try:
-                self._client = genai.Client(
-                    api_key=settings.GEMINI_API_KEY,
-                    http_options={"timeout": 15000},
-                )
-            except Exception as e:
-                logger.warning(f"No se pudo inicializar cliente de embeddings Gemini: {e}")
-                self._client = None
+            with self._client_lock:
+                if self._client is None:
+                    try:
+                        self._client = genai.Client(
+                            api_key=settings.GEMINI_API_KEY,
+                            http_options={"timeout": 15000},
+                        )
+                    except Exception as e:
+                        logger.warning(f"No se pudo inicializar cliente de embeddings Gemini: {e}")
+                        self._client = None
         return self._client
 
     def _fallback_embed_one(self, text: str) -> List[float]:
@@ -139,29 +154,39 @@ class GeminiHybridEmbeddingFunction:
             vec = [v / norm_val for v in vec]
         return vec
 
-    def _wait_for_rate_budget(self, count: int) -> None:
+    def _wait_for_rate_budget(self, count: int, max_wait: Optional[float] = None) -> bool:
         """
-        Respeta preventivamente el límite gratuito de Gemini Embeddings (100 ítems/minuto),
-        evitando errores HTTP 429 y warnings naranjas en despliegues sobre Render.
+        Respeta preventivamente el límite gratuito de Gemini Embeddings (ítems/minuto, configurable con
+        GEMINI_EMBEDDING_ITEMS_PER_MINUTE). Thread-safe: la espera ocurre fuera del candado.
+        Con `max_wait` (consultas del chat) no se bloquea más de ese tiempo: retorna False si no hay cupo.
         """
         window_secs = 62.0
-        safe_limit = 84
+        safe_limit = max(1, int(settings.GEMINI_EMBEDDING_ITEMS_PER_MINUTE))
+        waited = 0.0
         while True:
-            now = time.monotonic()
-            while self._minute_window and (now - self._minute_window[0][0]) >= window_secs:
-                self._minute_window.popleft()
-            used = sum(c for _, c in self._minute_window)
-            if used + count <= safe_limit or not self._minute_window:
-                self._minute_window.append((time.monotonic(), count))
-                return
-            oldest_ts = self._minute_window[0][0]
-            sleep_for = max(1.0, window_secs - (now - oldest_ts) + 0.5)
+            with self._budget_lock:
+                now = time.monotonic()
+                while self._minute_window and (now - self._minute_window[0][0]) >= window_secs:
+                    self._minute_window.popleft()
+                used = sum(c for _, c in self._minute_window)
+                if used + count <= safe_limit or not self._minute_window:
+                    self._minute_window.append((now, count))
+                    return True
+                oldest_ts = self._minute_window[0][0]
+                sleep_for = max(0.5, window_secs - (now - oldest_ts) + 0.5)
+            if max_wait is not None:
+                if waited >= max_wait:
+                    return False
+                sleep_for = min(sleep_for, max_wait - waited)
             logger.info(
                 f"Control preventivo de cuota Gemini Embeddings ({used}/{safe_limit} por min): pausa de {sleep_for:.1f}s..."
             )
             time.sleep(sleep_for)
+            waited += sleep_for
 
-    def _embed_batch_gemini(self, texts: List[str], task_type: str) -> Optional[List[List[float]]]:
+    def _embed_batch_gemini(
+        self, texts: List[str], task_type: str, max_wait: Optional[float] = None
+    ) -> Optional[List[List[float]]]:
         """Genera embeddings reales en lotes usando `gemini-embedding-001` (dim=768) con control de cuota."""
         if not self.client or not texts:
             return None
@@ -170,7 +195,9 @@ class GeminiHybridEmbeddingFunction:
             batch_size = 42
             for i in range(0, len(texts), batch_size):
                 batch = [(t[:6000] if t and t.strip() else "documento") for t in texts[i:i + batch_size]]
-                self._wait_for_rate_budget(len(batch))
+                if not self._wait_for_rate_budget(len(batch), max_wait=max_wait):
+                    logger.warning("Sin cupo de embeddings Gemini para la consulta; se usa respaldo local.")
+                    return None
 
                 res = None
                 for attempt in range(2):
@@ -205,45 +232,46 @@ class GeminiHybridEmbeddingFunction:
             return all_vectors
         except Exception as e:
             logger.info(f"Embeddings remotos omitidos ({str(e)[:120]}); usando respaldo local determinista.")
-            self.last_mode = "local_fallback"
             return None
 
-    def embed_documents(self, input: List[str]) -> List[List[float]]:  # noqa: A002
+    def embed_documents_with_mode(self, input: List[str]) -> Tuple[List[List[float]], str]:  # noqa: A002
+        """Retorna (vectores, modo). El modo indica en qué espacio vectorial quedaron los vectores."""
         vecs = self._embed_batch_gemini(list(input), task_type="RETRIEVAL_DOCUMENT")
         if vecs is not None:
-            return vecs
-        self.last_mode = "local_fallback"
-        return [self._fallback_embed_one(t) for t in input]
+            return vecs, settings.GEMINI_EMBEDDING_MODEL
+        self.last_mode = self.LOCAL_MODE
+        return [self._fallback_embed_one(t) for t in input], self.LOCAL_MODE
+
+    def embed_documents(self, input: List[str]) -> List[List[float]]:  # noqa: A002
+        return self.embed_documents_with_mode(input)[0]
+
+    def embed_query_with_mode(self, text: str) -> Tuple[List[float], str]:
+        """Embedding de una consulta del chat (espera de cuota limitada a unos segundos)."""
+        key = (text or "").strip().lower()
+        preferred_mode = settings.GEMINI_EMBEDDING_MODEL if self.client else self.LOCAL_MODE
+        with self._cache_lock:
+            cached = self._query_cache.get(f"{preferred_mode}:{key}")
+            if cached is not None:
+                self._query_cache.move_to_end(f"{preferred_mode}:{key}")
+                return cached, preferred_mode
+
+        mode = self.LOCAL_MODE
+        vecs = None
+        if self.client:
+            vecs = self._embed_batch_gemini([text], task_type="RETRIEVAL_QUERY", max_wait=self.QUERY_MAX_WAIT_SECONDS)
+        if vecs:
+            vec, mode = vecs[0], settings.GEMINI_EMBEDDING_MODEL
+        else:
+            vec = self._fallback_embed_one(text)
+
+        with self._cache_lock:
+            self._query_cache[f"{mode}:{key}"] = vec
+            if len(self._query_cache) > self._cache_max:
+                self._query_cache.popitem(last=False)
+        return vec, mode
 
     def embed_query(self, input: List[str]) -> List[List[float]]:  # noqa: A002
-        results: List[Optional[List[float]]] = [None] * len(input)
-        missing_indices: List[int] = []
-        missing_texts: List[str] = []
-
-        for idx, text in enumerate(input):
-            cache_key = f"{self.last_mode}:{text.strip().lower()}"
-            cached = self._query_cache.get(cache_key)
-            if cached is not None:
-                self._query_cache.move_to_end(cache_key)
-                results[idx] = cached
-            else:
-                missing_indices.append(idx)
-                missing_texts.append(text)
-
-        if missing_texts:
-            vecs = self._embed_batch_gemini(missing_texts, task_type="RETRIEVAL_QUERY")
-            if vecs is None:
-                self.last_mode = "local_fallback"
-                vecs = [self._fallback_embed_one(t) for t in missing_texts]
-
-            for idx, text, vec in zip(missing_indices, missing_texts, vecs):
-                results[idx] = vec
-                cache_key = f"{self.last_mode}:{text.strip().lower()}"
-                self._query_cache[cache_key] = vec
-                if len(self._query_cache) > self._cache_max:
-                    self._query_cache.popitem(last=False)
-
-        return [r for r in results if r is not None]
+        return [self.embed_query_with_mode(t)[0] for t in input]
 
     def __call__(self, input: List[str]) -> List[List[float]]:  # noqa: A002
         return self.embed_documents(input)
@@ -258,49 +286,62 @@ class RAGEngine:
 
     def __init__(self) -> None:
         self.persist_dir = settings.CHROMA_PERSIST_DIR
-        self.collection_name = f"{settings.CHROMA_COLLECTION_NAME}_emb{settings.EMBEDDING_DIM}"
+        # v2: los fragmentos guardan `emb_mode` para no mezclar vectores de Gemini con los locales
+        self.collection_name = f"{settings.CHROMA_COLLECTION_NAME}_emb{settings.EMBEDDING_DIM}_v2"
         self.text_splitter = LegalTextSplitter()
         self.embedding_fn = GeminiHybridEmbeddingFunction()
         self._client: Optional[chromadb.ClientAPI] = None
         self._collection = None
-        self._last_embeddings: Optional[List[List[float]]] = None
-        self._last_embedding_model: str = "local_fallback"
+        # RLock: la inicialización perezosa de Chroma no es thread-safe (el hilo de arranque y el
+        # primer health check de Render chocaban y la precarga de leyes fallaba con KeyError).
+        self._init_lock = threading.RLock()
+        self._thread_state = threading.local()
+
+    @staticmethod
+    def embeddings_to_json(
+        embeddings: Optional[List[List[float]]], mode: Optional[str]
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Serializa vectores para cachearlos en BD, solo si provienen del modelo real de Gemini."""
+        if embeddings and mode == settings.GEMINI_EMBEDDING_MODEL:
+            compact = [[round(v, 5) for v in row] for row in embeddings]
+            return json.dumps(compact, separators=(",", ":")), mode
+        return None, None
 
     def export_last_embeddings_json(self) -> Tuple[Optional[str], Optional[str]]:
         """
-        Retorna los vectores de la última ingesta en JSON compacto únicamente cuando
-        provinieron del modelo real de Gemini (para cachearlos en PostgreSQL y evitar
-        consumir cuota de embeddings en futuros reinicios de Render).
+        Compatibilidad: vectores de la última ingesta hecha EN ESTE MISMO HILO.
+        Preferir `ingest_document_full`, que devuelve los vectores junto al resultado.
         """
-        if (
-            self._last_embeddings
-            and self._last_embedding_model == settings.GEMINI_EMBEDDING_MODEL
-        ):
-            compact = [[round(v, 5) for v in row] for row in self._last_embeddings]
-            return json.dumps(compact, separators=(",", ":")), self._last_embedding_model
-        return None, None
+        last = getattr(self._thread_state, "last", None)
+        if not last:
+            return None, None
+        return self.embeddings_to_json(last[0], last[1])
 
     @property
     def client(self) -> chromadb.ClientAPI:
         if self._client is None:
-            os.makedirs(self.persist_dir, exist_ok=True)
-            self._client = chromadb.PersistentClient(
-                path=self.persist_dir,
-                settings=ChromaSettings(anonymized_telemetry=False),
-            )
+            with self._init_lock:
+                if self._client is None:
+                    os.makedirs(self.persist_dir, exist_ok=True)
+                    self._client = chromadb.PersistentClient(
+                        path=self.persist_dir,
+                        settings=ChromaSettings(anonymized_telemetry=False),
+                    )
         return self._client
 
     @property
     def collection(self):
         if self._collection is None:
-            self._collection = self.client.get_or_create_collection(
-                name=self.collection_name,
-                embedding_function=self.embedding_fn,
-                metadata={
-                    "description": "Corpus normativo y documentos de LegalProp AI (Gemini Embeddings 768d)",
-                    "hnsw:space": "cosine",
-                },
-            )
+            with self._init_lock:
+                if self._collection is None:
+                    self._collection = self.client.get_or_create_collection(
+                        name=self.collection_name,
+                        embedding_function=self.embedding_fn,
+                        metadata={
+                            "description": "Corpus normativo y documentos de LegalProp AI (Gemini Embeddings 768d)",
+                            "hnsw:space": "cosine",
+                        },
+                    )
         return self._collection
 
     def ingest_document(
@@ -315,10 +356,45 @@ class RAGEngine:
         filename: str = "",
         precomputed_embeddings: Optional[List[List[float]]] = None,
     ) -> int:
-        """Segmenta el documento y lo persiste en ChromaDB con embeddings semánticos o cacheados (RF08 / RNF04 / RNF10)."""
+        """Segmenta y persiste el documento. Retorna el número de fragmentos (ver `ingest_document_full`)."""
+        chunks, _, _ = self.ingest_document_full(
+            doc_id=doc_id,
+            title=title,
+            category=category,
+            content=content,
+            norma_numero=norma_numero,
+            owner_scope=owner_scope,
+            is_public=is_public,
+            filename=filename,
+            precomputed_embeddings=precomputed_embeddings,
+        )
+        return chunks
+
+    def count_chunks(self, content: str, title: str = "", category: str = "general") -> int:
+        """Cuenta cuántos fragmentos generaría un texto (para validar límites antes de indexar)."""
+        return len(self.text_splitter.split_legal_text(
+            text=content, doc_id="tmp", title=title, category=category, norma_numero=title
+        ))
+
+    def ingest_document_full(
+        self,
+        doc_id: str,
+        title: str,
+        category: str,
+        content: str,
+        norma_numero: str = "",
+        owner_scope: str = "public",
+        is_public: bool = True,
+        filename: str = "",
+        precomputed_embeddings: Optional[List[List[float]]] = None,
+    ) -> Tuple[int, Optional[str], Optional[str]]:
+        """
+        Segmenta el documento y lo persiste en ChromaDB con embeddings semánticos o cacheados (RF08 / RNF04 / RNF10).
+        Retorna (fragmentos, embeddings_json, embedding_model) de ESTA ingesta: sin estado compartido
+        entre hilos, así dos subidas simultáneas nunca intercambian sus vectores.
+        """
         self.delete_document(doc_id)
-        self._last_embeddings = None
-        self._last_embedding_model = "local_fallback"
+        self._thread_state.last = None
 
         chunks = self.text_splitter.split_legal_text(
             text=content,
@@ -330,7 +406,7 @@ class RAGEngine:
 
         if not chunks:
             logger.info(f"Documento sin fragmentos indexables: '{title}'.")
-            return 0
+            return 0, None, None
 
         ids = [c["chunk_id"] for c in chunks]
         documents = [c["content"] for c in chunks]
@@ -355,15 +431,15 @@ class RAGEngine:
             and len(precomputed_embeddings[0]) == self.embedding_fn.DIM
         ):
             embeddings = precomputed_embeddings
-            emb_label = f"{settings.GEMINI_EMBEDDING_MODEL}:cached"
-            self.embedding_fn.last_mode = settings.GEMINI_EMBEDDING_MODEL
-            self._last_embeddings = embeddings
-            self._last_embedding_model = settings.GEMINI_EMBEDDING_MODEL
+            emb_mode = settings.GEMINI_EMBEDDING_MODEL
+            emb_label = f"{emb_mode}:cached"
         else:
-            embeddings = self.embedding_fn.embed_documents(documents)
-            emb_label = self.embedding_fn.last_mode
-            self._last_embeddings = embeddings
-            self._last_embedding_model = self.embedding_fn.last_mode
+            embeddings, emb_mode = self.embedding_fn.embed_documents_with_mode(documents)
+            emb_label = emb_mode
+
+        for meta in metadatas:
+            meta["emb_mode"] = emb_mode
+        self._thread_state.last = (embeddings, emb_mode)
 
         batch_size = 100
         for i in range(0, len(ids), batch_size):
@@ -377,7 +453,8 @@ class RAGEngine:
         logger.info(
             f"Ingestados {len(chunks)} fragmentos de '{title}' (ID: {doc_id}, scope: {owner_scope}, emb: {emb_label})."
         )
-        return len(chunks)
+        emb_json, emb_model = self.embeddings_to_json(embeddings, emb_mode)
+        return len(chunks), emb_json, emb_model
 
     def delete_document(self, doc_id: str) -> int:
         """Elimina todos los fragmentos de un documento del almacén vectorial."""
@@ -462,7 +539,12 @@ class RAGEngine:
         where_filter: Optional[Dict[str, Any]],
         n_results: int,
         query_embedding: Optional[List[float]] = None,
+        emb_mode: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        if emb_mode:
+            # Solo comparar vectores del mismo espacio (Gemini con Gemini, local con local)
+            mode_filter = {"emb_mode": emb_mode}
+            where_filter = {"$and": [where_filter, mode_filter]} if where_filter else mode_filter
         try:
             total = self.collection.count()
             if total == 0:
@@ -563,7 +645,7 @@ class RAGEngine:
         valid_categories = {"arriendo", "propiedad_horizontal", "manual_interno", "contrato"}
         cat_clean = category.lower() if category and category.lower() in valid_categories else None
 
-        query_vec = self.embedding_fn.embed_query([query])[0]
+        query_vec, query_mode = self.embedding_fn.embed_query_with_mode(query)
 
         # 1. Documentos explícitamente seleccionados/adjuntados: incluir vista ordenada + matches vectoriales
         if document_ids:
@@ -577,7 +659,7 @@ class RAGEngine:
                         {"$or": [{"owner_scope": owner_scope}, {"is_public": True}]},
                     ]
                 }
-                for c in self._query_raw(query, doc_filter, n_results=4, query_embedding=query_vec):
+                for c in self._query_raw(query, doc_filter, n_results=4, query_embedding=query_vec, emb_mode=query_mode):
                     candidates_by_id[c["chunk_id"]] = c
 
         # 2. Otros documentos privados del propio usuario
@@ -590,7 +672,7 @@ class RAGEngine:
                         {"category": {"$in": [cat_clean, "manual_interno", "contrato", "general"]}},
                     ]
                 }
-            for c in self._query_raw(query, private_filter, n_results=4, query_embedding=query_vec):
+            for c in self._query_raw(query, private_filter, n_results=4, query_embedding=query_vec, emb_mode=query_mode):
                 candidates_by_id[c["chunk_id"]] = c
 
         # 3. Corpus normativo público oficial
@@ -602,11 +684,11 @@ class RAGEngine:
                     {"category": cat_clean},
                 ]
             }
-        public_hits = self._query_raw(query, public_filter, n_results=5, query_embedding=query_vec)
+        public_hits = self._query_raw(query, public_filter, n_results=5, query_embedding=query_vec, emb_mode=query_mode)
         if not public_hits and cat_clean in ("arriendo", "propiedad_horizontal"):
-            public_hits = self._query_raw(query, {"category": cat_clean}, n_results=5, query_embedding=query_vec)
+            public_hits = self._query_raw(query, {"category": cat_clean}, n_results=5, query_embedding=query_vec, emb_mode=query_mode)
         elif not public_hits:
-            public_hits = self._query_raw(query, None, n_results=5, query_embedding=query_vec)
+            public_hits = self._query_raw(query, None, n_results=5, query_embedding=query_vec, emb_mode=query_mode)
 
         for c in public_hits:
             if c.get("is_public", True) or c.get("owner_scope") in ("public", owner_scope):
@@ -675,12 +757,13 @@ class RAGEngine:
                 "status": "ready",
             }
         except Exception as e:
+            logger.warning(f"No se pudieron leer estadísticas de ChromaDB: {e}")
             return {
                 "collection_name": self.collection_name,
                 "total_chunks": 0,
                 "embedding_model": self.embedding_fn.last_mode,
                 "embedding_dimensions": self.embedding_fn.DIM,
-                "status": f"error: {str(e)}",
+                "status": "error",
             }
 
 

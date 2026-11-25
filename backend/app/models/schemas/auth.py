@@ -23,7 +23,7 @@ class RegisterRequest(BaseModel):
         description="Exactamente 3 preguntas de seguridad distintas para recuperación segura sin pagos",
     )
     accepted_privacy_policy: bool = Field(
-        True,
+        ...,
         description="Autorización previa, expresa e informada de la Política de Tratamiento de Datos (Ley 1581 de 2012)",
     )
 

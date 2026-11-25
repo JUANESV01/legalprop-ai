@@ -10,6 +10,8 @@ Características de seguridad implementadas:
 - Exportación completa de Habeas Data (Ley 1581 de 2012) incluyendo citas y bitácora.
 """
 
+import hashlib
+import hmac
 import json
 import re
 from datetime import datetime, timedelta
@@ -56,9 +58,36 @@ from app.services.rag_engine import rag_engine
 router = APIRouter()
 
 EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-DISTRIBUTED_LOCKOUT_THRESHOLD = 15
+DISTRIBUTED_LOCKOUT_THRESHOLD = 30
+DISTRIBUTED_WINDOW_MINUTES = 60
 LOCKOUT_MINUTES = 15
-PRIVACY_POLICY_VERSION = "v1.1-2026"
+PRIVACY_POLICY_VERSION = settings.PRIVACY_POLICY_VERSION
+
+# Mismo banco de preguntas que ofrece el frontend (OnboardingPage.tsx). Se usa para responder
+# con preguntas plausibles cuando el correo no existe y evitar la enumeración de cuentas.
+QUESTION_BANK = [
+    "¿Cuál es el nombre de tu primera mascota?",
+    "¿En qué ciudad naciste?",
+    "¿Cómo se llamaba tu colegio de primaria?",
+    "¿Cuál es el nombre del barrio donde creciste?",
+    "¿Cuál fue tu primer trabajo o universidad?",
+    "¿Cuál es el segundo nombre de tu madre o padre?",
+    "¿Cuál es tu libro o película favorita de infancia?",
+]
+GENERIC_RECOVERY_ERROR = "Los datos de recuperación no son válidos. Verifica e intenta de nuevo."
+
+
+def _decoy_questions(email: str) -> List[str]:
+    """Preguntas deterministas (siempre las mismas para un correo) que no revelan si la cuenta existe."""
+    digest = hmac.new(settings.JWT_SECRET_KEY.encode("utf-8"), email.encode("utf-8"), hashlib.sha256).digest()
+    pool = list(QUESTION_BANK)
+    chosen: List[str] = []
+    for byte in digest:
+        if len(chosen) == 3:
+            break
+        idx = byte % len(pool)
+        chosen.append(pool.pop(idx))
+    return chosen
 
 
 def _normalize_email(email: str) -> str:
@@ -153,6 +182,11 @@ def _register_failed_attempt(user: User, db: Session, request: Request, action_n
     ip_key = get_trusted_client_ip(request)
     count_ip, locked_ip = login_lockout_tracker.register_failure(user.email, ip_key)
 
+    now = datetime.utcnow()
+    last_failed = getattr(user, "last_failed_at", None)
+    if last_failed and (now - last_failed) > timedelta(minutes=DISTRIBUTED_WINDOW_MINUTES):
+        user.failed_attempts = 0  # Los fallos antiguos no se acumulan indefinidamente
+    user.last_failed_at = now
     user.failed_attempts = (user.failed_attempts or 0) + 1
     if user.failed_attempts >= DISTRIBUTED_LOCKOUT_THRESHOLD:
         user.locked_until = datetime.utcnow() + timedelta(minutes=LOCKOUT_MINUTES)
@@ -478,24 +512,20 @@ def get_recovery_questions(payload: RecoveryQuestionRequest, request: Request, d
     rate_limiter.check(f"auth:recovery:{get_trusted_client_ip(request)}", limit=6, window_seconds=60)
     email = _normalize_email(payload.email)
     user = db.query(User).filter(User.email == email, User.is_active == True).first()  # noqa: E712
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No encontramos una cuenta activa asociada a ese correo.",
-        )
+    questions = _parse_user_questions(user) if user and user.role != "master" else []
 
-    _check_not_locked(user, db, request, "PASSWORD_RECOVERY")
-    questions = _parse_user_questions(user)
-    if not questions and not user.recovery_code_hash:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Esta cuenta no tiene métodos de recuperación configurados.",
-        )
+    # Respuesta uniforme: si la cuenta no existe (o es la Master) se devuelven preguntas señuelo
+    # deterministas, para que nadie pueda averiguar qué correos están registrados.
+    if user and questions:
+        _check_not_locked(user, db, request, "PASSWORD_RECOVERY")
+        question_texts = [q["question"] for q in questions]
+    else:
+        question_texts = _decoy_questions(email)
 
     return RecoveryQuestionResponse(
-        email=user.email,
-        security_questions=[q["question"] for q in questions],
-        supports_recovery_code=bool(user.recovery_code_hash),
+        email=email,
+        security_questions=question_texts,
+        supports_recovery_code=True,
         message="Responde correctamente tus preguntas de seguridad o utiliza tu código maestro de respaldo.",
     )
 
@@ -509,8 +539,13 @@ def reset_password(payload: ResetPasswordRequest, request: Request, db: Session 
     rate_limiter.check(f"auth:reset:{get_trusted_client_ip(request)}", limit=8, window_seconds=60)
     email = _normalize_email(payload.email)
     user = db.query(User).filter(User.email == email, User.is_active == True).first()  # noqa: E712
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cuenta no encontrada.")
+    if not user or user.role == "master":
+        # Cuenta inexistente o Master (su contraseña solo se cambia con MASTER_ADMIN_PASSWORD):
+        # mismo tiempo de respuesta y mismo mensaje que un intento fallido real.
+        verify_password(payload.new_password, DUMMY_BCRYPT_HASH)
+        if user:
+            _log_security_event(db, "PASSWORD_RESET", "BLOCKED", user.id, request, "Intento de recuperación sobre cuenta Master")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=GENERIC_RECOVERY_ERROR)
 
     _check_not_locked(user, db, request, "PASSWORD_RESET")
 
@@ -519,10 +554,7 @@ def reset_password(payload: ResetPasswordRequest, request: Request, db: Session 
     if payload.method == "recovery_code":
         if not payload.recovery_code or not verify_recovery_code(payload.recovery_code, user.recovery_code_hash):
             _register_failed_attempt(user, db, request, "PASSWORD_RESET")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="El código de recuperación no es válido.",
-            )
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=GENERIC_RECOVERY_ERROR)
         new_rotated_code = generate_recovery_code()
         user.recovery_code_hash = hash_recovery_code(new_rotated_code)
         detail_msg = "Restablecimiento validado con código de respaldo (código rotado)"
@@ -531,20 +563,14 @@ def reset_password(payload: ResetPasswordRequest, request: Request, db: Session 
         provided = payload.security_answers or []
         if len(provided) != len(stored_questions) or len(stored_questions) == 0:
             _register_failed_attempt(user, db, request, "PASSWORD_RESET")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Debes responder todas las preguntas de seguridad ({len(stored_questions)}).",
-            )
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=GENERIC_RECOVERY_ERROR)
         all_match = all(
             verify_security_answer(ans, q_item["answer_hash"])
             for ans, q_item in zip(provided, stored_questions)
         )
         if not all_match:
             _register_failed_attempt(user, db, request, "PASSWORD_RESET")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Una o más respuestas de seguridad no coinciden. Verifica e intenta de nuevo.",
-            )
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=GENERIC_RECOVERY_ERROR)
         detail_msg = f"Restablecimiento validado con {len(stored_questions)} preguntas de seguridad"
 
     user.password_hash = hash_password(payload.new_password)
@@ -573,6 +599,7 @@ def change_password(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    rate_limiter.check(f"auth:change:{current_user.id}", limit=6, window_seconds=60)
     if not verify_password(payload.current_password, current_user.password_hash):
         _log_security_event(db, "PASSWORD_CHANGE", "FAILED", current_user.id, request, "Contraseña actual incorrecta")
         raise HTTPException(

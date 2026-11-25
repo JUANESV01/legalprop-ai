@@ -151,7 +151,13 @@ class IPCService:
                     self._live_cache[ipc_year] = (now, val, fuente, url, True)
                     return val, fuente, url, True
 
-            web_hit = await self._fetch_from_web_sources(ipc_year)
+            # Para años que aún no están en la serie certificada NO se acepta una cifra de noticias o
+            # buscadores: podría ser inflación mensual, acumulada o una proyección presentada como oficial.
+            web_hit = (
+                await self._fetch_from_web_sources(ipc_year)
+                if ipc_year in OFFICIAL_DANE_IPC_ANNUAL
+                else None
+            )
             if web_hit:
                 val, fuente, url = web_hit
                 self._live_cache[ipc_year] = (now, val, fuente, url, True)
@@ -163,9 +169,14 @@ class IPCService:
 
         latest_year = max(OFFICIAL_DANE_IPC_ANNUAL.keys())
         entry = OFFICIAL_DANE_IPC_ANNUAL[latest_year]
+        logger.warning(f"IPC {ipc_year} no está en la serie certificada; actualiza OFFICIAL_DANE_IPC_ANNUAL.")
         return (
             entry["ipc"],
-            f"Referencia certificada más reciente ({entry['fuente']})",
+            (
+                f"ATENCIÓN: el IPC anual {ipc_year} aún no está disponible en LegalProp AI. Se muestra el último "
+                f"IPC certificado ({latest_year}: {entry['ipc']}%) SOLO como referencia; verifica la cifra oficial "
+                f"en dane.gov.co antes de notificar el reajuste."
+            ),
             entry["url"],
             False,
         )

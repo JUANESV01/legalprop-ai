@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Upload, CheckCircle2, AlertCircle, Loader2, FileText, X } from 'lucide-react';
-import { apiService } from '../../services/api';
+import { apiService, getStoredToken, hasGuestConsent, setGuestConsent } from '../../services/api';
 import { DocumentUploadResponse } from '../../types';
 
 interface DocumentUploaderProps {
@@ -19,6 +19,9 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
   const [customTitle, setCustomTitle] = useState('');
   const [publishPublic, setPublishPublic] = useState(isMaster && defaultPublic);
   const [isUploading, setIsUploading] = useState(false);
+  // Ley 1581: los invitados deben aceptar la política antes de subir documentos
+  const isGuest = !getStoredToken();
+  const [guestConsent, setGuestConsentState] = useState<boolean>(() => hasGuestConsent());
 
   useEffect(() => {
     setPublishPublic(isMaster && defaultPublic);
@@ -52,6 +55,13 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!file) return;
+    if (isGuest && !guestConsent) {
+      setMessage({
+        type: 'error',
+        text: 'Para subir documentos como invitado debes aceptar la Política de Tratamiento de Datos.',
+      });
+      return;
+    }
 
     setIsUploading(true);
     setMessage(null);
@@ -225,6 +235,28 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
           </label>
         )}
 
+        {/* Consentimiento de invitados (Ley 1581 de 2012) */}
+        {isGuest && (
+          <label className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50/80 border border-amber-200 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={guestConsent}
+              onChange={(e) => {
+                setGuestConsent(e.target.checked);
+                setGuestConsentState(e.target.checked);
+              }}
+              className="mt-0.5 rounded border-amber-400 text-teal-700 focus:ring-teal-600"
+            />
+            <span className="text-[11px] text-amber-950">
+              Autorizo el tratamiento de los datos contenidos en este documento conforme a la{' '}
+              <a href="/privacidad" target="_blank" rel="noopener noreferrer" className="underline font-semibold">
+                Política de Tratamiento de Datos
+              </a>{' '}
+              (Ley 1581 de 2012). Recomendamos anonimizar datos personales de terceros antes de subirlo.
+            </span>
+          </label>
+        )}
+
         {/* Mensaje de estado */}
         {message && (
           <div
@@ -253,7 +285,7 @@ export const DocumentUploader: React.FC<DocumentUploaderProps> = ({
         {/* Botón de Ingesta */}
         <button
           type="submit"
-          disabled={!file || isUploading}
+          disabled={!file || isUploading || (isGuest && !guestConsent)}
           className="w-full py-2.5 bg-teal-700 hover:bg-teal-800 disabled:opacity-40 text-white font-semibold text-xs rounded-xl transition-all duration-150 shadow-soft flex items-center justify-center space-x-2 active:scale-95"
         >
           {isUploading ? (

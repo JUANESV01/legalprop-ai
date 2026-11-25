@@ -17,19 +17,14 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from app.api.v1.router import api_router
 from app.core.config import settings
-from app.core.security import (
-    generate_recovery_code,
-    hash_password,
-    hash_recovery_code,
-    hash_security_answer,
-    verify_password,
-)
+from app.core.runtime_state import set_state
+from app.core.security import hash_password, verify_password
 from app.db.database import DB_ENGINE_NAME, SessionLocal, init_db
 from app.models.db_models import Conversation, DocumentRecord, User
 from app.services.rag_engine import rag_engine
@@ -58,30 +53,17 @@ def seed_master_user() -> None:
     try:
         user = db.query(User).filter(User.email == email).first()
         if user is None:
-            default_questions = [
-                {
-                    "question": "¿Cuál es el nombre del proyecto?",
-                    "answer_hash": hash_security_answer("legalprop"),
-                },
-                {
-                    "question": "¿En qué universidad se desarrolla el proyecto?",
-                    "answer_hash": hash_security_answer("utp"),
-                },
-                {
-                    "question": "¿Cuál es la ley de propiedad horizontal en Colombia?",
-                    "answer_hash": hash_security_answer("675"),
-                },
-            ]
-            recovery_code = generate_recovery_code()
+            # Sin preguntas de seguridad: la contraseña Master se gestiona solo con MASTER_ADMIN_PASSWORD
+            # (las respuestas fijas en el código permitían a cualquiera restablecerla).
             user = User(
                 email=email,
                 full_name=full_name,
                 password_hash=hash_password(password),
                 role="master",
-                security_question=default_questions[0]["question"],
-                security_answer_hash=default_questions[0]["answer_hash"],
-                security_questions_json=json.dumps(default_questions, ensure_ascii=False),
-                recovery_code_hash=hash_recovery_code(recovery_code),
+                security_question=None,
+                security_answer_hash=None,
+                security_questions_json=None,
+                recovery_code_hash=None,
                 is_active=True,
             )
             db.add(user)
@@ -94,6 +76,15 @@ def seed_master_user() -> None:
                 )
                 return
             changed = False
+            if user.security_questions_json or user.security_answer_hash or user.recovery_code_hash:
+                # Elimina métodos de recuperación heredados (incluidas las respuestas por defecto públicas)
+                user.security_question = None
+                user.security_answer_hash = None
+                user.security_questions_json = None
+                user.recovery_code_hash = None
+                user.token_version = (user.token_version or 1) + 1
+                changed = True
+                logger.warning(f"Se eliminaron los métodos de recuperación heredados de la cuenta Master '{email}'.")
             if not verify_password(password, user.password_hash):
                 user.password_hash = hash_password(password)
                 user.token_version = (user.token_version or 1) + 1
@@ -216,7 +207,7 @@ def preload_base_normativas() -> None:
                         except Exception:
                             cached_vecs = None
 
-                    chunks = rag_engine.ingest_document(
+                    chunks, emb_json, emb_model = rag_engine.ingest_document_full(
                         doc_id=doc_id,
                         title=doc_title,
                         category=category,
@@ -227,7 +218,6 @@ def preload_base_normativas() -> None:
                         filename=file_name,
                         precomputed_embeddings=cached_vecs,
                     )
-                    emb_json, emb_model = rag_engine.export_last_embeddings_json()
                     if existing is None:
                         db.add(
                             DocumentRecord(
@@ -313,7 +303,7 @@ def rehydrate_documents_from_db() -> None:
                     )
                 )
             )
-            chunks = rag_engine.ingest_document(
+            chunks, emb_json, emb_model = rag_engine.ingest_document_full(
                 doc_id=doc.id,
                 title=doc.title,
                 category=doc.category,
@@ -324,7 +314,6 @@ def rehydrate_documents_from_db() -> None:
                 filename=doc.filename,
                 precomputed_embeddings=cached_vecs,
             )
-            emb_json, emb_model = rag_engine.export_last_embeddings_json()
             if emb_json and emb_model and not has_gemini_cache:
                 doc.embeddings_json = emb_json
                 doc.embedding_model = emb_model
@@ -341,8 +330,15 @@ def rehydrate_documents_from_db() -> None:
         db.close()
 
 
-def purge_expired_guest_sessions(max_age_hours: int = 24) -> None:
-    """Limpia sesiones temporales de invitados abandonadas (>24h) en BD y ChromaDB."""
+def purge_expired_guest_sessions(max_age_hours: int = 24, max_batches: int = 50) -> None:
+    """Limpia sesiones temporales de invitados abandonadas (>24h) en BD y ChromaDB, por lotes de 200."""
+    for _ in range(max_batches):
+        if not _purge_guest_batch(max_age_hours):
+            break
+
+
+def _purge_guest_batch(max_age_hours: int) -> bool:
+    """Elimina un lote; retorna True si borró algo (para continuar con el siguiente)."""
     cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
     db = SessionLocal()
     try:
@@ -377,16 +373,41 @@ def purge_expired_guest_sessions(max_age_hours: int = 24) -> None:
             logger.info(
                 f"Limpieza automática de invitados (>24h): {len(old_convs)} chats y {len(old_docs)} archivos temporales eliminados."
             )
+            return True
+        return False
     except Exception as e:
-        logger.debug(f"Limpieza de sesiones invitadas omitida: {e}")
+        logger.warning(f"Limpieza de sesiones invitadas omitida: {e}")
+        return False
     finally:
         db.close()
 
 
 def _sync_vector_store_on_startup() -> None:
+    set_state("corpus_ready", False)
     purge_expired_guest_sessions()
     preload_base_normativas()
     rehydrate_documents_from_db()
+    try:
+        ready = rag_engine.collection.count() > 0
+    except Exception:
+        ready = False
+    set_state("corpus_ready", ready)
+    if not ready:
+        logger.error("El corpus normativo quedó vacío tras el arranque; revisa los logs de precarga.")
+
+
+GUEST_PURGE_INTERVAL_SECONDS = 6 * 60 * 60
+
+
+async def _guest_purge_loop() -> None:
+    """Borra cada 6 horas los datos de invitados con más de 24 h (lo promete la política de datos)."""
+    while True:
+        await asyncio.sleep(GUEST_PURGE_INTERVAL_SECONDS)
+        try:
+            await asyncio.to_thread(purge_expired_guest_sessions)
+            set_state("last_guest_purge", datetime.utcnow().isoformat())
+        except Exception as e:  # pragma: no cover - solo registro
+            logger.warning(f"Limpieza periódica de invitados falló: {e}")
 
 
 @asynccontextmanager
@@ -398,14 +419,18 @@ async def lifespan(app: FastAPI):
     init_db()
     seed_master_user()
     bg_task = None
+    purge_task = None
     if settings.ENVIRONMENT == "test":
         _sync_vector_store_on_startup()
     else:
         # Sincronizar vectores en hilo de fondo para que Uvicorn abra $PORT en < 0.5s en Render
+        # (RAGEngine inicializa Chroma con candado, así que el health check simultáneo ya no lo rompe)
         bg_task = asyncio.create_task(asyncio.to_thread(_sync_vector_store_on_startup))
+        purge_task = asyncio.create_task(_guest_purge_loop())
     yield
-    if bg_task and not bg_task.done():
-        bg_task.cancel()
+    for task in (bg_task, purge_task):
+        if task and not task.done():
+            task.cancel()
     logger.info("Cerrando LegalProp AI Backend...")
 
 
@@ -498,10 +523,7 @@ def root():
         return FileResponse(FRONTEND_INDEX_HTML)
     return {
         "service": settings.PROJECT_NAME,
-        "version": settings.VERSION,
-        "database": DB_ENGINE_NAME,
         "status": "online",
-        "docs": "/docs",
         "api_v1": settings.API_V1_STR,
     }
 

@@ -21,18 +21,28 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = "tu_api_key_aqui"
     GEMINI_MODEL: str = "gemini-3.5-flash"
     GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
+    # Respaldo si el modelo principal falla (separados por comas). Verificados en la API de Google.
+    GEMINI_FALLBACK_MODELS: str = "gemini-3.5-flash,gemini-3.1-flash-lite,gemini-3.5-flash-lite"
     EMBEDDING_DIM: int = 768
 
     # Grok AI (xAI API — OpenAI-compatible)
     XAI_API_KEY: str = ""
-    XAI_MODEL: str = "grok-3-mini"
+    XAI_MODEL: str = ""
+    # Modelos de respaldo de Grok separados por comas (opcional). xAI retira modelos con frecuencia:
+    # consulta los vigentes en https://console.x.ai o con GET https://api.x.ai/v1/models
+    XAI_FALLBACK_MODELS: str = ""
     XAI_BASE_URL: str = "https://api.x.ai/v1"
 
     # Autenticación JWT y Seguridad (RF10 / RNF09)
-    JWT_SECRET_KEY: str = "legalprop-ai-jwt-secret-key-change-in-production-2026"
+    JWT_SECRET_KEY: str = _DEFAULT_JWT_SECRET
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRATION_MINUTES: int = 60 * 24 * 7  # 7 días
     MAX_UPLOAD_SIZE_MB: int = 25
+    # Límite de fragmentos por documento: con la cuota gratuita de embeddings (~84 ítems/min)
+    # un documento enorme tardaría muchos minutos en indexarse. Súbelo si usas un plan de pago.
+    MAX_CHUNKS_PER_DOCUMENT: int = 400
+    GEMINI_EMBEDDING_ITEMS_PER_MINUTE: int = 84
+    PRIVACY_POLICY_VERSION: str = "v1.1-2026"
 
     # Persistencia (SQLite local o PostgreSQL en producción vía DATABASE_URL)
     DATABASE_URL: str = "sqlite:///./legalprop.db"
@@ -93,7 +103,11 @@ class Settings(BaseSettings):
     @property
     def is_xai_configured(self) -> bool:
         key = (self.XAI_API_KEY or "").strip()
-        return bool(key) and not key.startswith("tu_") and len(key) > 12
+        return bool(key) and not key.startswith("tu_") and len(key) > 12 and bool((self.XAI_MODEL or "").strip())
+
+    @property
+    def is_production(self) -> bool:
+        return self.ENVIRONMENT == "production"
 
     model_config = SettingsConfigDict(
         env_file=".env",

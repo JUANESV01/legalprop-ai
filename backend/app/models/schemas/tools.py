@@ -63,6 +63,11 @@ class IPCCalcResponse(BaseModel):
 
 
 class PDFReportRequest(BaseModel):
+    message_id: Optional[str] = Field(
+        None,
+        max_length=64,
+        description="ID del mensaje de LegalProp AI guardado en el historial. Si se envía, la constancia se genera con el contenido verificado de la base de datos.",
+    )
     question: str = Field(..., min_length=1, max_length=3000, description="Consulta formulada por el usuario")
     answer: str = Field(..., min_length=1, max_length=30000, description="Respuesta jurídica generada")
     citations: List[CitationSchema] = Field(default_factory=list, max_length=20)

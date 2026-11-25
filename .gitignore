@@ -41,6 +41,7 @@ backend/storage/vector_store/*
 !backend/storage/vector_store/.gitkeep
 backend/app/storage/vector_store/*
 !backend/app/storage/vector_store/.gitkeep
+!backend/app/storage/vector_store/__init__.py
 
 # Variables de Entorno y Secretos (Mantener .env.example)
 *.env

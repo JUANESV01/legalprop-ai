@@ -1,9 +1,10 @@
 import json
 from datetime import datetime
 from typing import Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from app.core.rate_limiter import get_trusted_client_ip, rate_limiter
 from app.core.security import get_guest_session_id, get_optional_user
 from app.db.database import get_db
 from app.models.db_models import Conversation, Message, User
@@ -244,10 +245,14 @@ def delete_conversation(
 )
 def export_conversation_pdf(
     conversation_id: str,
+    request: Request,
     current_user: Optional[User] = Depends(get_optional_user),
     guest_session_id: Optional[str] = Depends(get_guest_session_id),
     db: Session = Depends(get_db),
 ):
+    client_key = f"u:{current_user.id}" if current_user else f"ip:{get_trusted_client_ip(request)}"
+    rate_limiter.check(f"conv:pdf:{client_key}", limit=10, window_seconds=60)
+
     conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
     if not conv:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversación no encontrada.")
@@ -286,6 +291,7 @@ def export_conversation_pdf(
         category=conv.category or "General",
         user_name=current_user.full_name if current_user else "Usuario Invitado",
         conversation_title=conv.title,
+        verification_note=f"Verificacion: historial completo de la sesion (ref. {conv.id[:8]})",
     )
 
     return Response(

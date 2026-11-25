@@ -1,0 +1,7 @@
+# Linter de Python (ruff). Ejecutar desde backend/:  ruff check .
+target-version = "py311"
+line-length = 130
+
+[lint]
+# E9: errores de sintaxis; F: pyflakes (imports sin usar, variables indefinidas, etc.)
+select = ["E9", "F"]

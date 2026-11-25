@@ -228,7 +228,7 @@ def _run_background_reindex() -> None:
                     cached_vecs = json.loads(doc.embeddings_json)
                 except Exception:
                     cached_vecs = None
-            chunks = rag_engine.ingest_document(
+            chunks, emb_json, emb_model = rag_engine.ingest_document_full(
                 doc_id=doc.id,
                 title=doc.title,
                 category=doc.category,
@@ -239,7 +239,6 @@ def _run_background_reindex() -> None:
                 filename=doc.filename,
                 precomputed_embeddings=cached_vecs,
             )
-            emb_json, emb_model = rag_engine.export_last_embeddings_json()
             if emb_json and emb_model and not cached_vecs:
                 doc.embeddings_json = emb_json
                 doc.embedding_model = emb_model

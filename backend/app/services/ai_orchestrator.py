@@ -38,7 +38,7 @@ class AIOrchestrator:
             },
             "grok": {
                 "enabled": settings.is_xai_configured,
-                "model": settings.XAI_MODEL,
+                "model": settings.XAI_MODEL or None,
                 "label": "Grok AI",
                 "description": "xAI Grok para razonamiento y revisión contractual",
             },
@@ -73,7 +73,7 @@ class AIOrchestrator:
         # - Si se requiere Google Search Grounding o Gemini está disponible, Gemini va primero
         #   con failover inmediato a Grok; si solo Grok está configurado, usa Grok.
         if has_gemini and has_grok:
-            return ["gemini", "grok"] if enable_google_search else ["gemini", "grok"]
+            return ["gemini", "grok"]
         if has_grok:
             return ["grok"]
         return ["gemini"]
@@ -136,7 +136,7 @@ class AIOrchestrator:
                 }
             except Exception as exc:
                 last_error = exc
-                fallback_reason = f"{provider} no disponible ({str(exc)[:90]})"
+                fallback_reason = f"{provider} no disponible"
                 logger.warning(f"Orquestador: fallo en proveedor '{provider}', probando respaldo: {exc}")
 
         raise RuntimeError(f"Todos los proveedores de IA fallaron: {last_error}")

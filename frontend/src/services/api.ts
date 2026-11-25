@@ -43,16 +43,38 @@ export function setStoredToken(token: string | null): void {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
+export const PRIVACY_POLICY_VERSION = 'v1.1-2026';
+const GUEST_CONSENT_KEY = 'legalprop_guest_privacy_consent';
+
+function secureRandomId(): string {
+  // El ID de invitado es lo único que protege sus chats y documentos: debe ser impredecible.
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/g, '');
+  }
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export function getOrCreateGuestSessionId(): string {
   // Limpiar cualquier ID antiguo persistido en localStorage
   localStorage.removeItem(GUEST_SESSION_KEY);
   // sessionStorage sobrevive a recargas (F5) en la misma pestaña, pero se borra al cerrar la pestaña
   let id = sessionStorage.getItem(GUEST_SESSION_KEY);
-  if (!id) {
-    id = `gs_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  if (!id || !/^gs_[a-f0-9]{32}$/.test(id)) {
+    id = `gs_${secureRandomId()}`;
     sessionStorage.setItem(GUEST_SESSION_KEY, id);
   }
   return id;
+}
+
+export function hasGuestConsent(): boolean {
+  return sessionStorage.getItem(GUEST_CONSENT_KEY) === PRIVACY_POLICY_VERSION;
+}
+
+export function setGuestConsent(accepted: boolean): void {
+  if (accepted) sessionStorage.setItem(GUEST_CONSENT_KEY, PRIVACY_POLICY_VERSION);
+  else sessionStorage.removeItem(GUEST_CONSENT_KEY);
 }
 
 function buildHeaders(extra?: Record<string, string>): Record<string, string> {
@@ -60,6 +82,7 @@ function buildHeaders(extra?: Record<string, string>): Record<string, string> {
     'X-Guest-Session': getOrCreateGuestSessionId(),
     ...(extra || {}),
   };
+  if (hasGuestConsent()) headers['X-Privacy-Consent'] = PRIVACY_POLICY_VERSION;
   const token = getStoredToken();
   if (token) headers['Authorization'] = `Bearer ${token}`;
   return headers;
@@ -486,6 +509,7 @@ export const apiService = {
   },
 
   async downloadMessagePdf(payload: {
+    message_id?: string | null;
     question: string;
     answer: string;
     citations: Citation[];
@@ -493,11 +517,18 @@ export const apiService = {
     user_name?: string | null;
     conversation_title?: string | null;
   }): Promise<void> {
-    const response = await fetch(`${API_BASE_URL}/tools/reports/pdf`, {
-      method: 'POST',
-      headers: buildHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(payload),
-    });
+    const send = (body: typeof payload) =>
+      fetch(`${API_BASE_URL}/tools/reports/pdf`, {
+        method: 'POST',
+        headers: buildHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body),
+      });
+    // Con message_id el servidor genera una constancia VERIFICADA desde el historial guardado.
+    let response = await send(payload);
+    if (response.status === 404 && payload.message_id) {
+      // Mensaje aún no guardado (p. ej. respuesta interrumpida): constancia marcada como no verificada
+      response = await send({ ...payload, message_id: null });
+    }
     if (!response.ok) throw await parseError(response, 'Error generando constancia PDF');
     const blob = await response.blob();
     const url = URL.createObjectURL(blob);

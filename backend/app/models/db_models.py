@@ -40,6 +40,7 @@ class User(Base):
     # Protección contra fuerza bruta (login / recuperación) y revocación JWT
     failed_attempts = Column(Integer, default=0, nullable=False)
     locked_until = Column(DateTime, nullable=True)
+    last_failed_at = Column(DateTime, nullable=True)
     token_version = Column(Integer, default=1, nullable=False)
 
     # Consentimiento informado Política de Tratamiento de Datos (Ley 1581 de 2012)

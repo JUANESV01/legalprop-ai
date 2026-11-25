@@ -11,20 +11,30 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 # Palabras clave que activan automáticamente la búsqueda web / grounding actualizado
+# Solo indicadores PÚBLICOS activan la búsqueda web automática. Temas como "tutela", "sentencia"
+# o "vigente" ya no la activan solos: la consulta podría contener datos personales y salir hacia
+# buscadores externos sin que el usuario lo pidiera (Ley 1581). Para eso está el botón de búsqueda web.
 WEB_TRIGGER_KEYWORDS = [
-    "ipc", "dane", "inflacion", "inflación", "este año", "este ano",
-    "2025", "2026", "2027", "vigente", "actualizado", "reciente",
-    "sentencia", "corte constitucional", "tutela", "jurisprudencia",
+    "ipc", "dane", "inflacion", "inflación",
     "salario minimo", "salario mínimo", "smmlv", "uvt", "tasa de usura",
-    "interes bancario", "interés bancario", "superfinanciera",
     "busca en la web", "buscar en internet", "en internet", "en la web",
-    "ultima norma", "última norma", "decreto reciente", "aumento de arriendo",
-    "subir el arriendo", "incremento de canon", "reajuste de canon",
 ]
+
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_LONG_NUMBER_RE = re.compile(r"\b\d[\d.\-\s]{5,}\d\b")
+_PHONE_OR_ID_RE = re.compile(r"\b(?:c\.?c\.?|cc|nit|cedula|cédula|tel|cel)\b[:\s#]*\S+", re.IGNORECASE)
+
+
+def scrub_personal_data(text: str) -> str:
+    """Elimina correos, cédulas, NIT y teléfonos antes de enviar una consulta a buscadores externos."""
+    cleaned = _EMAIL_RE.sub(" ", text or "")
+    cleaned = _PHONE_OR_ID_RE.sub(" ", cleaned)
+    cleaned = _LONG_NUMBER_RE.sub(" ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def should_trigger_web_search(query: str) -> bool:
-    """Determina automáticamente si la consulta requiere datos web en tiempo real (IPC, jurisprudencia, etc.)."""
+    """Determina si la consulta pide un indicador público en tiempo real (IPC, SMMLV, UVT, usura...)."""
     q = (query or "").lower()
     return any(kw in q for kw in WEB_TRIGGER_KEYWORDS)
 
@@ -117,7 +127,7 @@ class WebSearchService:
             "o", "me", "mi", "tu", "su", "se", "si", "puede", "pueden", "debe", "deben", "quiero",
             "saber", "dime", "explica", "busca", "buscar", "internet", "web",
         }
-        cleaned = re.sub(r"[¿?¡!.,;:()\"']", " ", raw_query or "")
+        cleaned = re.sub(r"[¿?¡!.,;:()\"']", " ", scrub_personal_data(raw_query or ""))
         tokens = [t for t in cleaned.split() if len(t) > 1 and t.lower() not in stopwords]
         core = " ".join(tokens[:10]).strip() or cleaned.strip()
         ql = (raw_query or "").lower()
